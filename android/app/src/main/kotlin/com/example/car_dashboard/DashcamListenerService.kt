@@ -12,6 +12,7 @@ import java.io.ByteArrayOutputStream
 class DashcamListenerService : NotificationListenerService() {
 
     companion object {
+        var instance: DashcamListenerService? = null
         var isRecording: Boolean = false
         val activeNotificationsMap = mutableMapOf<String, Map<String, Any>>()
         val activeIntents = mutableMapOf<String, android.app.PendingIntent>()
@@ -39,10 +40,16 @@ class DashcamListenerService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        instance = this
         for (sbn in activeNotifications) {
             checkDashcam(sbn)
             cacheNotification(sbn)
         }
+    }
+
+    override fun onListenerDisconnected() {
+        super.onListenerDisconnected()
+        instance = null
     }
 
     private fun checkDashcam(sbn: StatusBarNotification) {

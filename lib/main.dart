@@ -15,6 +15,8 @@ import 'theme/dynamic_theme.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'ui/settings_dialog.dart';
 import 'ui/sidebar_tabs.dart';
+import 'ui/phone_tab.dart';
+import 'package:share_handler/share_handler.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -62,6 +64,17 @@ class DashboardProvider with ChangeNotifier {
   LocationPermission _permission = LocationPermission.denied;
   bool _serviceEnabled = false;
   String _errorMessage = '';
+
+  // Favorites state variables
+  List<Map<String, String>> _favorites = [
+    {'title': 'My Supermix', 'url': 'My Supermix'},
+    {'title': 'Chill Beats', 'url': 'Chill Beats'},
+    {'title': 'Driving Anthems', 'url': 'Driving Anthems'},
+  ];
+  Map<String, String>? _pendingSharedFavorite;
+  
+  List<Map<String, String>> get favorites => _favorites;
+  Map<String, String>? get pendingSharedFavorite => _pendingSharedFavorite;
 
   // Now Playing state variables
   String _currentTrack = 'Not Playing';
@@ -203,6 +216,9 @@ class DashboardProvider with ChangeNotifier {
     _startLocationUpdates();
     _startMediaPolling();
     _startDashcamPolling();
+    
+    await loadFavorites();
+    initShareHandler();
 
     // Listen for call state updates from Android native
     platform.setMethodCallHandler((call) async {
@@ -257,7 +273,7 @@ class DashboardProvider with ChangeNotifier {
       _callNumber = number;
       
       // Resolve caller contact name if we haven't already
-      if (_callNumber.isNotEmpty && _callName.isEmpty) {
+      if (_callNumber.isNotEmpty && (_callName.isEmpty || _callName == 'Unknown Caller')) {
         _callName = await _resolveContactName(_callNumber);
       } else if (_callNumber.isEmpty) {
         _callName = 'Unknown Caller';
@@ -274,11 +290,6 @@ class DashboardProvider with ChangeNotifier {
             }
           });
         }
-      } else if (stateStr == 'RINGING' || stateStr == 'DIALING' || stateStr == 'CONNECTING') {
-        // Automatically switch sidebar tab to the Phone Tab (index 1) to show caller UI
-        if (_selectedSidebarTab != 1) {
-          _selectedSidebarTab = 1;
-        }
       }
     }
     notifyListeners();
@@ -289,13 +300,24 @@ class DashboardProvider with ChangeNotifier {
       final cleanNumber = number.replaceAll(RegExp(r'\D'), '');
       if (cleanNumber.isEmpty) return 'Unknown Caller';
       
+      final status = await FlutterContacts.permissions.request(PermissionType.read);
+      if (status != PermissionStatus.granted) {
+        return number.isNotEmpty ? number : 'Unknown Caller';
+      }
+      
       final contacts = await FlutterContacts.getAll(properties: ContactProperties.all);
       for (final contact in contacts) {
         for (final phone in contact.phones) {
           final cleanPhone = phone.number.replaceAll(RegExp(r'\D'), '');
-          if (cleanPhone == cleanNumber || (cleanPhone.endsWith(cleanNumber) && cleanNumber.length >= 7)) {
-            final name = contact.displayName;
-            return (name != null && name.isNotEmpty) ? name : (number.isNotEmpty ? number : 'Unknown Caller');
+          
+          if (cleanPhone.isNotEmpty && cleanNumber.isNotEmpty) {
+            String suffixContact = cleanPhone.length > 7 ? cleanPhone.substring(cleanPhone.length - 7) : cleanPhone;
+            String suffixIncoming = cleanNumber.length > 7 ? cleanNumber.substring(cleanNumber.length - 7) : cleanNumber;
+            
+            if (suffixContact == suffixIncoming) {
+              final name = contact.displayName;
+              return (name != null && name.isNotEmpty) ? name : (number.isNotEmpty ? number : 'Unknown Caller');
+            }
           }
         }
       }
@@ -439,7 +461,7 @@ class DashboardProvider with ChangeNotifier {
      try {
         final lat = position.latitude;
         final lon = position.longitude;
-        final query = '[out:json];way(around:100,$lat,$lon)["maxspeed"];out tags;';
+        final query = '[out:json];way(around:30,$lat,$lon)["maxspeed"]["highway"!="service"];out tags;';
         final url = Uri.parse('https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(query)}');
         
         final response = await http.get(url, headers: {'User-Agent': 'CarDashboardApp/1.0'}).timeout(const Duration(seconds: 5));
@@ -603,6 +625,168 @@ class DashboardProvider with ChangeNotifier {
     }
     notifyListeners();
   }
+
+  Future<void> loadFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+    final titles = prefs.getStringList('fav_titles');
+    final urls = prefs.getStringList('fav_urls');
+    final subtitles = prefs.getStringList('fav_subtitles');
+    
+    if (titles != null && urls != null && titles.length == urls.length && titles.isNotEmpty) {
+      _favorites = List.generate(titles.length, (i) => {
+        'title': titles[i],
+        'url': urls[i],
+        'subtitle': (subtitles != null && i < subtitles.length) ? subtitles[i] : 'YouTube Music Playlist',
+      });
+      notifyListeners();
+    }
+  }
+
+  Future<void> saveFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('fav_titles', _favorites.map((e) => e['title'] ?? '').toList());
+    await prefs.setStringList('fav_urls', _favorites.map((e) => e['url'] ?? '').toList());
+    await prefs.setStringList('fav_subtitles', _favorites.map((e) => e['subtitle'] ?? 'YouTube Music Playlist').toList());
+    notifyListeners();
+  }
+
+  void updateFavorites(List<Map<String, String>> newFavorites) {
+    _favorites = newFavorites;
+    saveFavorites();
+  }
+
+  void clearPendingSharedFavorite() {
+    _pendingSharedFavorite = null;
+    notifyListeners();
+  }
+
+  void replaceFavorite(int index, Map<String, String> newFavorite) {
+    if (index >= 0 && index < _favorites.length) {
+      _favorites[index] = newFavorite;
+      saveFavorites();
+      notifyListeners();
+    }
+  }
+
+  void addNewFavorite(Map<String, String> newFav) {
+    if (_favorites.length < 8) {
+      _favorites.insert(0, newFav);
+      saveFavorites();
+      setSidebarTab(0); // Switch to Media tab
+      notifyListeners();
+    } else {
+      _pendingSharedFavorite = newFav;
+      setSidebarTab(0); // Switch to Media tab
+      notifyListeners();
+    }
+  }
+
+  void removeFavoriteAt(int index) {
+    if (index >= 0 && index < _favorites.length) {
+      _favorites.removeAt(index);
+      saveFavorites();
+      notifyListeners();
+    }
+  }
+
+  void removeFavoriteByTitle(String title) {
+    _favorites.removeWhere((fav) => fav['title'] == title);
+    saveFavorites();
+    notifyListeners();
+  }
+
+  void handleSharedText(String sharedText) async {
+    String title = sharedText;
+    String url = sharedText;
+    String subtitle = 'Search Query';
+    
+    if (sharedText.contains('\n')) {
+      final parts = sharedText.split('\n');
+      title = parts[0].trim();
+      if (parts.length > 1) {
+        url = parts[1].trim();
+      }
+    } else if (sharedText.startsWith('http')) {
+      url = sharedText;
+      title = "Loading...";
+      subtitle = 'Shared Link';
+      try {
+         final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 3));
+         if (response.statusCode == 200) {
+            final match = RegExp(r'<title>(.*?)</title>').firstMatch(response.body);
+            if (match != null) {
+               String fetchedTitle = match.group(1) ?? "Shared Link";
+               fetchedTitle = fetchedTitle.replaceAll('- YouTube Music', '').replaceAll('- YouTube', '').trim();
+               fetchedTitle = fetchedTitle.replaceAll('&#39;', "'").replaceAll('&quot;', '"').replaceAll('&amp;', '&');
+               
+               String finalTitle = fetchedTitle;
+               String finalSubtitle = "YouTube Music";
+
+               if (fetchedTitle.contains(' - ')) {
+                 final split = fetchedTitle.split(' - ');
+                 finalTitle = split[0].trim();
+                 finalSubtitle = split.sublist(1).join(' - ').trim();
+               }
+
+               if (finalTitle.isNotEmpty && finalTitle != "YouTube") {
+                 // Update asynchronously
+                 for (int i = 0; i < _favorites.length; i++) {
+                   if (_favorites[i]['url'] == url) {
+                     _favorites[i]['title'] = finalTitle.length > 40 ? "${finalTitle.substring(0, 37)}..." : finalTitle;
+                     _favorites[i]['subtitle'] = finalSubtitle;
+                     saveFavorites();
+                     notifyListeners();
+                     break;
+                   }
+                 }
+                 if (_pendingSharedFavorite != null && _pendingSharedFavorite!['url'] == url) {
+                   _pendingSharedFavorite!['title'] = finalTitle.length > 40 ? "${finalTitle.substring(0, 37)}..." : finalTitle;
+                   _pendingSharedFavorite!['subtitle'] = finalSubtitle;
+                   notifyListeners();
+                 }
+                 return; // Avoid doing it synchronously below
+               }
+            }
+         }
+      } catch (e) {
+         debugPrint("Failed to fetch title for URL: $e");
+         for (int i = 0; i < _favorites.length; i++) {
+           if (_favorites[i]['url'] == url) {
+             _favorites[i]['title'] = "Shared Link";
+             saveFavorites();
+             notifyListeners();
+             break;
+           }
+         }
+      }
+    }
+
+    // Limit length if necessary
+    if (title.length > 40) title = "${title.substring(0, 37)}...";
+
+    final newFav = {'title': title, 'url': url, 'subtitle': subtitle};
+    addNewFavorite(newFav);
+  }
+
+  StreamSubscription<SharedMedia>? _shareSubscription;
+
+  void initShareHandler() async {
+    final handler = ShareHandlerPlatform.instance;
+    try {
+      final initialMedia = await handler.getInitialSharedMedia();
+      if (initialMedia != null && initialMedia.content != null) {
+        handleSharedText(initialMedia.content!);
+      }
+    } catch (e) {
+      debugPrint("Initial share error: $e");
+    }
+
+    _shareSubscription = handler.sharedMediaStream.listen((SharedMedia media) {
+      if (media.content != null) {
+        handleSharedText(media.content!);
+      }
+    });
+  }
 }
 
 class DashboardScreen extends StatefulWidget {
@@ -690,10 +874,18 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     ),
                     const SizedBox(width: 14),
                     
-                    // Center Column: Media Control Panel
-                    const Expanded(
+                    // Center Column: Media Control Panel or Call Screen
+                    Expanded(
                       flex: 8,
-                      child: MediaControlPanel(),
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 300),
+                        transitionBuilder: (Widget child, Animation<double> animation) {
+                          return FadeTransition(opacity: animation, child: child);
+                        },
+                        child: provider.callState != 'IDLE' 
+                            ? const CallScreenWidget(key: ValueKey('call_screen')) 
+                            : const MediaControlPanel(key: ValueKey('media_panel')),
+                      ),
                     ),
                     const SizedBox(width: 14),
                     
@@ -844,6 +1036,8 @@ class MediaControlPanel extends StatefulWidget {
 }
 
 class _MediaControlPanelState extends State<MediaControlPanel> {
+  bool _isAlbumArtHidden = false;
+
   // Removed fake progress controller
 
 
@@ -861,6 +1055,14 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
     }
   }
 
+  String _formatDuration(double totalMilliseconds) {
+    if (totalMilliseconds <= 0) return "0:00";
+    final duration = Duration(milliseconds: totalMilliseconds.toInt());
+    final minutes = duration.inMinutes;
+    final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
+    return "$minutes:$seconds";
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = Provider.of<DashboardProvider>(context);
@@ -871,133 +1073,157 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
     // Logic handled natively now
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: onSurface.withOpacity(0.05)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
+      child: Stack(
         children: [
-          // Header
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Icon(Icons.music_note, color: theme.colorScheme.primary, size: 12),
-              const SizedBox(width: 6),
-              Text(
-                "SYSTEM MEDIA",
-                style: TextStyle(
-                  color: onSurface.withOpacity(0.6),
-                  fontSize: 9,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.5,
-                ),
-              ),
-              const Spacer(),
-              GestureDetector(
-                onTap: () => provider.requestMediaPermissions(),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                     color: onSurface.withOpacity(0.1),
-                     borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text("SYNC", style: TextStyle(color: onSurface, fontSize: 8, fontWeight: FontWeight.bold)),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
+
 
           // Large Album Art on Top (Takes maximum space)
           Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final size = constraints.maxWidth < constraints.maxHeight 
-                    ? constraints.maxWidth 
-                    : constraints.maxHeight;
-                return Container(
-                  width: size,
-                  height: size,
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surface.withOpacity(0.5), // fallback color
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: onSurface.withOpacity(0.1)),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.2), // keep shadow black
-                        blurRadius: 15,
-                        offset: const Offset(0, 8),
-                      )
-                    ]
-                  ),
-                  clipBehavior: Clip.hardEdge,
-                  child: provider.currentAlbumArtBytes != null
-                      ? Image.memory(
-                          provider.currentAlbumArtBytes!, 
-                          fit: BoxFit.cover, 
-                          errorBuilder: (c, e, s) => Icon(Icons.music_video_rounded, color: onSurface.withOpacity(0.2), size: 60)
-                        )
-                      : Center(
-                          child: Icon(Icons.music_video_rounded, color: onSurface.withOpacity(0.2), size: 60),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 300),
+              child: !_isAlbumArtHidden
+                  ? GestureDetector(
+                      key: const ValueKey('albumArt'),
+                      onTap: () {
+                        setState(() {
+                          _isAlbumArtHidden = true;
+                        });
+                      },
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final size = constraints.maxWidth < constraints.maxHeight 
+                              ? constraints.maxWidth 
+                              : constraints.maxHeight;
+                          return Container(
+                            width: size,
+                            height: size,
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.surface.withOpacity(0.5), // fallback color
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: onSurface.withOpacity(0.1)),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.2), // keep shadow black
+                                  blurRadius: 15,
+                                  offset: const Offset(0, 8),
+                                )
+                              ]
+                            ),
+                            clipBehavior: Clip.hardEdge,
+                            child: provider.currentAlbumArtBytes != null
+                                ? Image.memory(
+                                    provider.currentAlbumArtBytes!, 
+                                    fit: BoxFit.cover, 
+                                    errorBuilder: (c, e, s) => Icon(Icons.music_video_rounded, color: onSurface.withOpacity(0.2), size: 60)
+                                  )
+                                : Center(
+                                    child: Icon(Icons.music_video_rounded, color: onSurface.withOpacity(0.2), size: 60),
+                                  ),
+                          );
+                        },
+                      ),
+                    )
+                  : GestureDetector(
+                      key: const ValueKey('hiddenArt'),
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () {
+                        setState(() {
+                          _isAlbumArtHidden = false;
+                        });
+                      },
+                      child: SizedBox.expand(
+                        child: Center(
+                          child: Container(
+                            width: 64,
+                            height: 64,
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.surface.withOpacity(0.5),
+                              shape: BoxShape.circle,
+                              border: Border.all(color: onSurface.withOpacity(0.1)),
+                            ),
+                            child: Icon(Icons.music_video_rounded, color: onSurface.withOpacity(0.5), size: 32),
+                          ),
                         ),
-                );
-              },
+                      ),
+                    ),
             ),
           ),
           
           const SizedBox(height: 12),
           
           // Track Info
-          Text(
-            provider.currentTrack,
-            style: TextStyle(
-              color: onSurface,
-              fontSize: 16,
-              fontWeight: FontWeight.w900,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
+          AutoScrollText(
+             text: provider.currentTrack,
+             style: TextStyle(
+               color: onSurface,
+               fontSize: 18,
+               fontWeight: FontWeight.w900,
+             ),
           ),
           const SizedBox(height: 2),
-          Text(
-            provider.currentArtist,
-            style: TextStyle(
-              color: onSurface.withOpacity(0.6),
-              fontSize: 12,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
+          AutoScrollText(
+             text: provider.currentArtist,
+             style: TextStyle(
+               color: onSurface.withOpacity(0.6),
+               fontSize: 14,
+             ),
           ),
           
-          const SizedBox(height: 12),
+          const SizedBox(height: 2),
           
-          // Real Native Progress Bar
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              activeTrackColor: theme.colorScheme.primary,
-              inactiveTrackColor: onSurface.withOpacity(0.1),
-              thumbColor: theme.colorScheme.primary,
-              trackHeight: 4.0,
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8.0),
-              overlayColor: theme.colorScheme.primary.withOpacity(0.2),
-              overlayShape: const RoundSliderOverlayShape(overlayRadius: 16.0),
-            ),
-            child: Slider(
-              value: provider.mediaPosition.clamp(0.0, provider.mediaDuration),
-              min: 0.0,
-              max: provider.mediaDuration,
-              onChanged: (value) {
-                // Seek not supported natively through this plugin yet
-              },
-            ),
+          // Real Native Progress Bar with Duration below it
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                height: 24,
+                child: SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    activeTrackColor: theme.colorScheme.primary,
+                    inactiveTrackColor: onSurface.withOpacity(0.1),
+                    thumbColor: theme.colorScheme.primary,
+                    trackHeight: 4.0,
+                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6.0),
+                    overlayColor: theme.colorScheme.primary.withOpacity(0.2),
+                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 12.0),
+                  ),
+                  child: Slider(
+                    value: provider.mediaPosition.clamp(0.0, provider.mediaDuration),
+                    min: 0.0,
+                    max: provider.mediaDuration,
+                    onChanged: (value) {},
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _formatDuration(provider.mediaPosition),
+                      style: TextStyle(fontSize: 10, color: onSurface.withOpacity(0.6)),
+                    ),
+                    Text(
+                      _formatDuration(provider.mediaDuration),
+                      style: TextStyle(fontSize: 10, color: onSurface.withOpacity(0.6)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
           
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
 
           // Control Buttons
           Row(
@@ -1028,6 +1254,41 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
               ),
             ],
           ),
+        ],
+      ),
+          
+      Positioned(
+        top: 0,
+        right: 0,
+        child: Builder(
+          builder: (context) {
+            final isFavorited = provider.favorites.any((fav) => fav['title'] == provider.currentTrack && (fav['subtitle'] == provider.currentArtist || fav['subtitle'] == 'Search Query'));
+            return IconButton(
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              icon: Icon(
+                isFavorited ? Icons.favorite : Icons.favorite_border,
+                color: theme.colorScheme.primary,
+                size: 20
+              ),
+              onPressed: () {
+                 if (provider.currentTrack != 'Not Playing') {
+                    if (isFavorited) {
+                      provider.removeFavoriteByTitle(provider.currentTrack);
+                    } else {
+                      final query = "${provider.currentTrack} ${provider.currentArtist}";
+                      provider.addNewFavorite({
+                        'title': provider.currentTrack,
+                        'subtitle': provider.currentArtist,
+                        'url': query
+                      });
+                    }
+                 }
+              },
+            );
+          }
+        ),
+      ),
         ],
       ),
     );
@@ -1097,62 +1358,26 @@ class FavoritesSidebar extends StatefulWidget {
 }
 
 class _FavoritesSidebarState extends State<FavoritesSidebar> {
-  List<Map<String, String>> _favorites = [
-    {
-      'title': 'My Supermix',
-      'url': 'My Supermix'
-    },
-    {
-      'title': 'Chill Beats',
-      'url': 'Chill Beats'
-    },
-    {
-      'title': 'Driving Anthems',
-      'url': 'Driving Anthems'
-    },
-  ];
-
-  @override
-  void initState() {
-    super.initState();
-    _loadFavorites();
-  }
-
-  Future<void> _loadFavorites() async {
-    final prefs = await SharedPreferences.getInstance();
-    final titles = prefs.getStringList('fav_titles');
-    final urls = prefs.getStringList('fav_urls');
-    
-    if (titles != null && urls != null && titles.length == urls.length && titles.isNotEmpty) {
-      setState(() {
-        _favorites = List.generate(titles.length, (i) => {
-          'title': titles[i],
-          'url': urls[i],
-        });
-      });
-    }
-  }
-
-  Future<void> _saveFavorites() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('fav_titles', _favorites.map((e) => e['title']!).toList());
-    await prefs.setStringList('fav_urls', _favorites.map((e) => e['url']!).toList());
-  }
-
   void _editFavorites() {
+    final provider = Provider.of<DashboardProvider>(context, listen: false);
+    final favs = provider.favorites;
+
     showDialog(
       context: context,
       builder: (context) {
-        final List<TextEditingController> titleControllers = _favorites.map((f) => TextEditingController(text: f['title'])).toList();
-        final List<TextEditingController> urlControllers = _favorites.map((f) => TextEditingController(text: f['url'])).toList();
+        final List<TextEditingController> titleControllers = favs.map((f) => TextEditingController(text: f['title'] ?? '')).toList();
+        final List<TextEditingController> urlControllers = favs.map((f) => TextEditingController(text: f['url'] ?? '')).toList();
         
         return AlertDialog(
           backgroundColor: const Color(0xFF151525),
           title: const Text("Edit Favorites", style: TextStyle(color: Colors.white)),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: List.generate(titleControllers.length, (i) {
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 300,
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: titleControllers.length,
+              itemBuilder: (context, i) {
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 12.0),
                   child: Row(
@@ -1177,7 +1402,7 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
                     ],
                   ),
                 );
-              }),
+              },
             ),
           ),
           actions: [
@@ -1187,16 +1412,77 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
             ),
             TextButton(
               onPressed: () {
-                setState(() {
-                  for (int i = 0; i < _favorites.length; i++) {
-                    _favorites[i]['title'] = titleControllers[i].text;
-                    _favorites[i]['url'] = urlControllers[i].text;
+                final newFavs = <Map<String, String>>[];
+                for (int i = 0; i < titleControllers.length; i++) {
+                  if (titleControllers[i].text.isNotEmpty || urlControllers[i].text.isNotEmpty) {
+                    newFavs.add({
+                      'title': titleControllers[i].text,
+                      'url': urlControllers[i].text,
+                      'subtitle': i < favs.length ? (favs[i]['subtitle'] ?? 'Search Query') : 'Search Query',
+                    });
                   }
-                });
-                _saveFavorites();
+                }
+                provider.updateFavorites(newFavs);
                 Navigator.pop(context);
               },
               child: const Text("SAVE", style: TextStyle(color: Color(0xFF00E5FF))),
+            ),
+          ],
+        );
+      }
+    );
+  }
+
+  void _showReplaceDialog(DashboardProvider provider) {
+    final pending = provider.pendingSharedFavorite;
+    if (pending == null) return;
+    
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF151525),
+          title: const Text("Favorites Full", style: TextStyle(color: Colors.white)),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 280,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text("Your 8 Quick Favorites are full. Which one should be replaced by '${pending['title']}'?", 
+                  style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                const SizedBox(height: 16),
+                Expanded(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: provider.favorites.length,
+                    itemBuilder: (context, index) {
+                      final fav = provider.favorites[index];
+                      return ListTile(
+                        title: Text(fav['title']!, style: const TextStyle(color: Colors.white)),
+                        subtitle: Text(fav['url']!, style: const TextStyle(color: Colors.white54, fontSize: 10)),
+                        trailing: const Icon(Icons.swap_horiz, color: Color(0xFF00E5FF)),
+                        onTap: () {
+                          provider.replaceFavorite(index, pending);
+                          provider.clearPendingSharedFavorite();
+                          Navigator.pop(context);
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                provider.clearPendingSharedFavorite();
+                Navigator.pop(context);
+              },
+              child: const Text("CANCEL"),
             ),
           ],
         );
@@ -1267,8 +1553,17 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
 
   @override
   Widget build(BuildContext context) {
+    final provider = Provider.of<DashboardProvider>(context);
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
+
+    if (provider.pendingSharedFavorite != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (provider.pendingSharedFavorite != null) {
+          _showReplaceDialog(provider);
+        }
+      });
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1299,21 +1594,26 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
           ),
         ),
         
-        ...List.generate(_favorites.length, (index) {
-           return Expanded(
-             child: Padding(
-               padding: EdgeInsets.only(bottom: index == _favorites.length - 1 ? 0 : 8.0),
-               child: _PlaylistCard(
-                 title: _favorites[index]['title']!,
-                 subtitle: 'YouTube Music Playlist',
-                 startColor: startColors[index % startColors.length],
-                 endColor: endColors[index % endColors.length],
-                 icon: icons[index % icons.length],
-                 onTap: () => _launchPlaylist(context, _favorites[index]['url']!),
-               ),
-             ),
-           );
-        }),
+        Expanded(
+          child: ListView.builder(
+            itemCount: provider.favorites.length,
+            padding: const EdgeInsets.only(top: 4.0),
+            itemBuilder: (context, index) {
+              return Padding(
+                padding: EdgeInsets.only(bottom: index == provider.favorites.length - 1 ? 0 : 8.0),
+                child: _PlaylistCard(
+                  title: provider.favorites[index]['title'] ?? 'Unknown',
+                  subtitle: provider.favorites[index]['subtitle'] ?? 'YouTube Music Playlist',
+                  startColor: startColors[index % startColors.length],
+                  endColor: endColors[index % endColors.length],
+                  icon: icons[index % icons.length],
+                  onTap: () => _launchPlaylist(context, provider.favorites[index]['url'] ?? ''),
+                  onLongPress: () => provider.removeFavoriteAt(index),
+                ),
+              );
+            },
+          ),
+        ),
       ],
     );
   }
@@ -1326,6 +1626,7 @@ class _PlaylistCard extends StatefulWidget {
   final Color endColor;
   final IconData icon;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   const _PlaylistCard({
     required this.title,
@@ -1334,6 +1635,7 @@ class _PlaylistCard extends StatefulWidget {
     required this.endColor,
     required this.icon,
     required this.onTap,
+    this.onLongPress,
   });
 
   @override
@@ -1353,6 +1655,7 @@ class _PlaylistCardState extends State<_PlaylistCard> with SingleTickerProviderS
       onTapUp: (_) => setState(() => _scale = 1.0),
       onTapCancel: () => setState(() => _scale = 1.0),
       onTap: widget.onTap,
+      onLongPress: widget.onLongPress,
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
         child: AnimatedScale(
@@ -1420,6 +1723,85 @@ class _PlaylistCardState extends State<_PlaylistCard> with SingleTickerProviderS
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class AutoScrollText extends StatefulWidget {
+  final String text;
+  final TextStyle style;
+
+  const AutoScrollText({super.key, required this.text, required this.style});
+
+  @override
+  State<AutoScrollText> createState() => _AutoScrollTextState();
+}
+
+class _AutoScrollTextState extends State<AutoScrollText> with SingleTickerProviderStateMixin {
+  late ScrollController _scrollController;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController = ScrollController();
+    _startScrolling();
+  }
+
+  @override
+  void didUpdateWidget(AutoScrollText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text != widget.text) {
+      _scrollController.jumpTo(0);
+      _startScrolling();
+    }
+  }
+
+  void _startScrolling() {
+    _timer?.cancel();
+    _timer = Timer(const Duration(seconds: 2), _scroll);
+  }
+
+  void _scroll() {
+    if (!mounted || !_scrollController.hasClients) return;
+    
+    final maxScroll = _scrollController.position.maxScrollExtent;
+    if (maxScroll > 0) {
+      final duration = Duration(milliseconds: (maxScroll * 20).toInt());
+      _scrollController.animateTo(
+        maxScroll,
+        duration: duration,
+        curve: Curves.linear,
+      ).then((_) {
+        if (!mounted) return;
+        _timer = Timer(const Duration(seconds: 2), () {
+          if (!mounted || !_scrollController.hasClients) return;
+          _scrollController.jumpTo(0);
+          _startScrolling();
+        });
+      });
+    } else {
+      _timer = Timer(const Duration(seconds: 2), _scroll);
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      controller: _scrollController,
+      scrollDirection: Axis.horizontal,
+      physics: const NeverScrollableScrollPhysics(),
+      child: Text(
+        widget.text,
+        style: widget.style,
       ),
     );
   }

@@ -18,6 +18,12 @@ class _NotificationsTabState extends State<NotificationsTab> {
   final Map<String, MemoryImage> _iconCache = {};
   final Set<String> _expandedKeys = {};
 
+  String? _trackedChatId;
+  String? _trackedChatTitle;
+  String? _trackedChatAppName;
+  final ValueNotifier<List<Map<String, String>>> _trackedMessagesNotifier = ValueNotifier([]);
+
+
   @override
   void initState() {
     super.initState();
@@ -39,6 +45,52 @@ class _NotificationsTabState extends State<NotificationsTab> {
             if (iconBytes != null) {
               _iconCache[key] = MemoryImage(iconBytes);
             }
+          }
+        }
+
+        if (_trackedChatId != null) {
+          final newMessages = List<Map<String, String>>.from(_trackedMessagesNotifier.value);
+          bool updated = false;
+
+          for (final notif in notifs) {
+            final pkg = notif['package']?.toString() ?? '';
+            final title = notif['title']?.toString() ?? '';
+            final chatId = '$pkg|$title';
+
+            if (chatId == _trackedChatId) {
+              final text = notif['text']?.toString() ?? '';
+              final timeStr = _formatTime(notif['postTime']?.toString());
+              
+              bool isNew = true;
+              for (final msg in newMessages) {
+                if (msg['rawText'] == text && msg['time'] == timeStr) {
+                  isNew = false;
+                  break;
+                }
+              }
+
+              if (isNew && text.isNotEmpty) {
+                String sender = title;
+                String messageText = text;
+                if (text.contains(': ')) {
+                  final parts = text.split(': ');
+                  sender = parts[0];
+                  messageText = parts.sublist(1).join(': ');
+                }
+
+                newMessages.add({
+                  'sender': sender,
+                  'text': messageText,
+                  'time': timeStr,
+                  'rawText': text,
+                });
+                updated = true;
+              }
+            }
+          }
+
+          if (updated) {
+            _trackedMessagesNotifier.value = newMessages;
           }
         }
 
@@ -74,24 +126,112 @@ class _NotificationsTabState extends State<NotificationsTab> {
     }
   }
 
+  void _startTracking(String pkg, String title, String appName) {
+    setState(() {
+      _trackedChatId = '$pkg|$title';
+      _trackedChatTitle = title;
+      _trackedChatAppName = appName;
+    });
+    
+    final initialMessages = <Map<String, String>>[];
+    for (final notif in _notifications) {
+      final nPkg = notif['package']?.toString() ?? '';
+      final nTitle = notif['title']?.toString() ?? '';
+      if ('$nPkg|$nTitle' == _trackedChatId) {
+        final text = notif['text']?.toString() ?? '';
+        final timeStr = _formatTime(notif['postTime']?.toString());
+        if (text.isNotEmpty) {
+          String sender = title;
+          String messageText = text;
+          if (text.contains(': ')) {
+            final parts = text.split(': ');
+            sender = parts[0];
+            messageText = parts.sublist(1).join(': ');
+          }
+          // Avoid duplicates
+          bool isNew = true;
+          for (final msg in initialMessages) {
+            if (msg['rawText'] == text && msg['time'] == timeStr) {
+              isNew = false;
+              break;
+            }
+          }
+          if (isNew) {
+            initialMessages.add({
+              'sender': sender,
+              'text': messageText,
+              'time': timeStr,
+              'rawText': text,
+            });
+          }
+        }
+      }
+    }
+    
+    _trackedMessagesNotifier.value = initialMessages;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
+
+    if (_trackedChatId != null) {
+      return TrackedChatView(
+        title: _trackedChatTitle ?? '',
+        appName: _trackedChatAppName ?? '',
+        messagesNotifier: _trackedMessagesNotifier,
+        onBack: () {
+          setState(() {
+            _trackedChatId = null;
+          });
+        },
+      );
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
           padding: const EdgeInsets.only(left: 4.0, bottom: 4.0),
-          child: Text(
-            "ALERTS & NOTIFICATIONS",
-            style: TextStyle(
-              color: onSurface.withOpacity(0.6),
-              fontSize: 10,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 1.5,
-            ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                "ALERTS & NOTIFICATIONS",
+                style: TextStyle(
+                  color: onSurface.withOpacity(0.6),
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.5,
+                ),
+              ),
+              if (_notifications.isNotEmpty)
+                GestureDetector(
+                  onTap: () async {
+                    try {
+                      await platform.invokeMethod('clearAllNotifications');
+                      setState(() {
+                        _notifications.clear();
+                        _expandedKeys.clear();
+                      });
+                    } catch (e) {
+                      debugPrint("Clear all failed: $e");
+                    }
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.all(4.0),
+                    child: Text(
+                      "CLEAR ALL",
+                      style: TextStyle(
+                        color: theme.colorScheme.primary,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
         Expanded(
@@ -119,25 +259,45 @@ class _NotificationsTabState extends State<NotificationsTab> {
                       topText += " • $subText";
                     }
                     
-                    return GestureDetector(
-                      onTap: () {
-                         if (_expandedKeys.contains(key)) {
-                            setState(() { _expandedKeys.remove(key); });
-                         } else {
-                            setState(() { _expandedKeys.add(key); });
-                         }
+                    return Dismissible(
+                      key: ValueKey(key),
+                      direction: DismissDirection.horizontal,
+                      onDismissed: (direction) {
+                        platform.invokeMethod('clearNotification', {'key': key});
+                        setState(() {
+                          _notifications.removeAt(index);
+                          _expandedKeys.remove(key);
+                        });
                       },
-                      onDoubleTap: () {
-                         platform.invokeMethod('openNotification', {'key': key});
-                      },
-                      child: Container(
+                      background: Container(
                         margin: const EdgeInsets.only(bottom: 6.0),
-                        padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 10.0),
                         decoration: BoxDecoration(
-                          color: onSurface.withOpacity(0.05),
+                          color: Colors.red.withOpacity(0.8),
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: onSurface.withOpacity(0.02)),
                         ),
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.only(right: 20.0),
+                        child: const Icon(Icons.delete_outline, color: Colors.white),
+                      ),
+                      child: GestureDetector(
+                        onTap: () {
+                           if (_expandedKeys.contains(key)) {
+                              setState(() { _expandedKeys.remove(key); });
+                           } else {
+                              setState(() { _expandedKeys.add(key); });
+                           }
+                        },
+                        onDoubleTap: () {
+                           platform.invokeMethod('openNotification', {'key': key});
+                        },
+                        child: Container(
+                          margin: const EdgeInsets.only(bottom: 6.0),
+                          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 10.0),
+                          decoration: BoxDecoration(
+                            color: onSurface.withOpacity(0.05),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: onSurface.withOpacity(0.02)),
+                          ),
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -172,15 +332,164 @@ class _NotificationsTabState extends State<NotificationsTab> {
                                   const SizedBox(height: 1),
                                   if (text.isNotEmpty)
                                     Text(text, style: TextStyle(color: onSurface.withOpacity(0.8), fontSize: 12), maxLines: isExpanded ? null : 2, overflow: isExpanded ? null : TextOverflow.ellipsis),
+                                  if (isExpanded) ...[
+                                    const SizedBox(height: 8),
+                                    Align(
+                                      alignment: Alignment.centerRight,
+                                      child: OutlinedButton(
+                                        onPressed: () => _startTracking(pkg, title, appName),
+                                        style: OutlinedButton.styleFrom(
+                                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                          minimumSize: Size.zero,
+                                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                          side: BorderSide(color: theme.colorScheme.primary.withOpacity(0.5)),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                        ),
+                                        child: Text(
+                                          "TRACK",
+                                          style: TextStyle(
+                                            color: theme.colorScheme.primary,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),
                           ],
                         ),
+                        ),
                       ),
                     );
                   },
                 ),
+        ),
+      ],
+    );
+  }
+}
+
+class TrackedChatView extends StatelessWidget {
+  final String title;
+  final String appName;
+  final ValueNotifier<List<Map<String, String>>> messagesNotifier;
+  final VoidCallback onBack;
+
+  const TrackedChatView({
+    super.key,
+    required this.title,
+    required this.appName,
+    required this.messagesNotifier,
+    required this.onBack,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final onSurface = theme.colorScheme.onSurface;
+
+    return Column(
+      children: [
+        Row(
+          children: [
+            IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: onBack,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    "Tracking via $appName",
+                    style: TextStyle(fontSize: 11, color: onSurface.withOpacity(0.6)),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const Divider(),
+        Expanded(
+          child: ValueListenableBuilder<List<Map<String, String>>>(
+            valueListenable: messagesNotifier,
+            builder: (context, messages, _) {
+              if (messages.isEmpty) {
+                return Center(
+                  child: Text(
+                    "No messages tracked yet.",
+                    style: TextStyle(color: onSurface.withOpacity(0.5)),
+                  ),
+                );
+              }
+
+                  return ListView.builder(
+                    itemCount: messages.length,
+                    itemBuilder: (context, index) {
+                      final msg = messages[index];
+                      final isMe = msg['sender'] == 'Me'; // Simple heuristic
+                      
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12.0),
+                        child: Column(
+                          crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                          children: [
+                            if (!isMe)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 8.0, bottom: 4.0),
+                                child: Text(
+                                  msg['sender'] ?? '',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: onSurface.withOpacity(0.6),
+                                  ),
+                                ),
+                              ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: isMe 
+                                    ? theme.colorScheme.primary.withOpacity(0.8)
+                                    : onSurface.withOpacity(0.08),
+                                borderRadius: BorderRadius.circular(16).copyWith(
+                                  bottomLeft: isMe ? const Radius.circular(16) : const Radius.circular(4),
+                                  bottomRight: isMe ? const Radius.circular(4) : const Radius.circular(16),
+                                ),
+                              ),
+                              child: Text(
+                                msg['text'] ?? '',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: isMe ? theme.colorScheme.onPrimary : onSurface,
+                                ),
+                              ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4.0, left: 8.0, right: 8.0),
+                              child: Text(
+                                msg['time'] ?? '',
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  color: onSurface.withOpacity(0.4),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  );
+              },
+            ),
         ),
       ],
     );

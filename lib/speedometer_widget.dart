@@ -22,144 +22,154 @@ class SpeedometerWidget extends StatelessWidget {
     final onSurface = theme.colorScheme.onSurface;
 
     return Container(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: onSurface.withOpacity(0.05)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+      child: Stack(
         children: [
-          // Header with Dashcam & GPS Status
-          Row(
+          // Main Content
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Icon(Icons.drive_eta_rounded, color: onSurface.withOpacity(0.5), size: 16),
-              const SizedBox(width: 8),
-              Text(
-                "GPS",
-                style: TextStyle(
-                  color: onSurface.withOpacity(0.5),
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 2,
-                ),
-              ),
-              const Spacer(),
-              if (provider.dashcamRecording)
-                 Row(
-                   children: [
-                     Container(
-                       width: 8, height: 8,
-                       decoration: const BoxDecoration(
-                         color: Colors.red,
-                         shape: BoxShape.circle,
-                       ),
-                     ),
-                     const SizedBox(width: 4),
-                     const Text("REC", style: TextStyle(color: Colors.red, fontSize: 10, fontWeight: FontWeight.bold)),
-                     const SizedBox(width: 12),
-                   ],
-                 ),
-              Icon(
-                provider.hasLocationPermission ? Icons.gps_fixed : Icons.gps_off,
-                color: provider.hasLocationPermission ? onSurface.withOpacity(0.3) : Colors.red,
-                size: 14,
-              ),
-            ],
-          ),
-          
-          Expanded(
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                // Meaningful Circular Gauge
-                Positioned.fill(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: CustomPaint(
-                      painter: _SpeedGaugePainter(
-                        percentage: speedPercent,
-                        trackColor: onSurface.withOpacity(0.05),
-                        progressColor: theme.colorScheme.primary,
-                      ),
-                    ),
-                  ),
-                ),
-                
-                // Centered Digital Speed
-                Column(
-                  mainAxisSize: MainAxisSize.min,
+              Expanded(
+                child: Stack(
+                  alignment: Alignment.center,
                   children: [
-                    Text(
-                      speedString,
-                      style: TextStyle(
-                        color: onSurface,
-                        fontSize: 68,
-                        fontWeight: FontWeight.w700,
-                        height: 1.0,
-                        letterSpacing: -2,
+                    // Meaningful Circular Gauge
+                    Positioned.fill(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: CustomPaint(
+                          painter: _SpeedGaugePainter(
+                            percentage: speedPercent,
+                            trackColor: onSurface.withOpacity(0.05),
+                            progressColor: theme.colorScheme.primary,
+                          ),
+                        ),
                       ),
                     ),
-                    Text(
-                      provider.isKmph ? "KM/H" : "MPH",
-                      style: TextStyle(
-                        color: onSurface.withOpacity(0.4),
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 2,
+                    
+                    // Centered Digital Speed
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          speedString,
+                          style: TextStyle(
+                            color: onSurface,
+                            fontSize: 68,
+                            fontWeight: FontWeight.w700,
+                            height: 1.0,
+                            letterSpacing: -2,
+                          ),
+                        ),
+                        Text(
+                          provider.isKmph ? "KM/H" : "MPH",
+                          style: TextStyle(
+                            color: onSurface.withOpacity(0.4),
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 2,
+                          ),
+                        ),
+                      ],
+                    ),
+                    
+                    // Speed Limit Sign
+                    Positioned(
+                      bottom: 0,
+                      child: Container(
+                         width: 44,
+                         height: 44,
+                         decoration: BoxDecoration(
+                           color: Colors.white, // Speed signs are always white bg with red border
+                           shape: BoxShape.circle,
+                           border: Border.all(color: Colors.red, width: 4),
+                         ),
+                         alignment: Alignment.center,
+                         child: Text(
+                           provider.speedLimit,
+                           style: const TextStyle(
+                             color: Colors.black,
+                             fontWeight: FontWeight.w900,
+                             fontSize: 16,
+                           ),
+                         ),
                       ),
                     ),
                   ],
                 ),
-                
-                // Speed Limit Sign
-                Positioned(
-                  bottom: 0,
-                  child: Container(
-                     width: 44,
-                     height: 44,
-                     decoration: BoxDecoration(
-                       color: Colors.white, // Speed signs are always white bg with red border
-                       shape: BoxShape.circle,
-                       border: Border.all(color: Colors.red, width: 4),
-                     ),
-                     alignment: Alignment.center,
-                     child: Text(
-                       provider.speedLimit,
-                       style: const TextStyle(
-                         color: Colors.black,
-                         fontWeight: FontWeight.w900,
-                         fontSize: 16,
-                       ),
-                     ),
+              ),
+              
+              // Extra Metrics (Altitude, Heading, Street Name)
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _buildMetricItem(Icons.height, "${provider.altitude.toStringAsFixed(0)} M", onSurface),
+                  _buildMetricItem(Icons.explore, _getHeadingString(provider.heading), onSurface),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Center(
+                child: Text(
+                  provider.streetName,
+                  style: TextStyle(
+                    color: onSurface.withOpacity(0.5),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 1,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-              ],
-            ),
-          ),
-          
-          // Extra Metrics (Altitude, Heading, Street Name)
-          const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              _buildMetricItem(Icons.height, "${provider.altitude.toStringAsFixed(0)} M", onSurface),
-              _buildMetricItem(Icons.explore, _getHeadingString(provider.heading), onSurface),
+              ),
             ],
           ),
-          const SizedBox(height: 8),
-          Center(
-            child: Text(
-              provider.streetName,
-              style: TextStyle(
-                color: onSurface.withOpacity(0.5),
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 1,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+          
+          // Floating Header overlay (takes 0 vertical space from the main layout)
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: Row(
+              children: [
+                Icon(Icons.drive_eta_rounded, color: onSurface.withOpacity(0.5), size: 16),
+                const SizedBox(width: 8),
+                Text(
+                  "GPS",
+                  style: TextStyle(
+                    color: onSurface.withOpacity(0.5),
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 2,
+                  ),
+                ),
+                const Spacer(),
+                if (provider.dashcamRecording)
+                   Row(
+                     children: [
+                       Container(
+                         width: 8, height: 8,
+                         decoration: const BoxDecoration(
+                           color: Colors.red,
+                           shape: BoxShape.circle,
+                         ),
+                       ),
+                       const SizedBox(width: 4),
+                       const Text("REC", style: TextStyle(color: Colors.red, fontSize: 10, fontWeight: FontWeight.bold)),
+                       const SizedBox(width: 12),
+                     ],
+                   ),
+                Icon(
+                  provider.hasLocationPermission ? Icons.gps_fixed : Icons.gps_off,
+                  color: provider.hasLocationPermission ? onSurface.withOpacity(0.3) : Colors.red,
+                  size: 14,
+                ),
+              ],
             ),
           ),
         ],

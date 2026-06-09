@@ -153,6 +153,31 @@ class MainActivity : FlutterActivity() {
                         result.success(emptyList<Map<String, Any>>())
                     }
                 }
+                "clearAllNotifications" -> {
+                    try {
+                        DashcamListenerService.instance?.cancelAllNotifications()
+                        DashcamListenerService.activeNotificationsMap.clear()
+                        DashcamListenerService.activeIntents.clear()
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("FAILED", "Could not clear notifications", null)
+                    }
+                }
+                "clearNotification" -> {
+                    val key = call.argument<String>("key")
+                    if (key != null) {
+                        try {
+                            DashcamListenerService.instance?.cancelNotification(key)
+                            DashcamListenerService.activeNotificationsMap.remove(key)
+                            DashcamListenerService.activeIntents.remove(key)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("FAILED", "Could not clear notification", null)
+                        }
+                    } else {
+                        result.error("INVALID", "Key is null", null)
+                    }
+                }
                 "openNotification" -> {
                     val key = call.argument<String>("key")
                     if (key != null) {
@@ -197,18 +222,20 @@ class MainActivity : FlutterActivity() {
                 "checkPhonePermissions" -> {
                     val readPhoneState = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
                     val callPhone = ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
+                    val readCallLog = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED
+                    val readContacts = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
                     val answerPhoneCalls = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         ContextCompat.checkSelfPermission(this, Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED
                     } else {
                         true
                     }
-                    result.success(readPhoneState && callPhone && answerPhoneCalls)
+                    result.success(readPhoneState && callPhone && answerPhoneCalls && readCallLog && readContacts)
                 }
                 "requestPhonePermissions" -> {
                     val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        arrayOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.ANSWER_PHONE_CALLS, Manifest.permission.CALL_PHONE)
+                        arrayOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.ANSWER_PHONE_CALLS, Manifest.permission.CALL_PHONE, Manifest.permission.READ_CALL_LOG, Manifest.permission.READ_CONTACTS)
                     } else {
-                        arrayOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.CALL_PHONE)
+                        arrayOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.CALL_PHONE, Manifest.permission.READ_CALL_LOG, Manifest.permission.READ_CONTACTS)
                     }
                     ActivityCompat.requestPermissions(this, permissions, 1002)
                     result.success(true)
@@ -219,8 +246,23 @@ class MainActivity : FlutterActivity() {
                 }
                 "answerCall" -> {
                     try {
-                        CallService.activeCall?.answer(android.telecom.VideoProfile.STATE_AUDIO_ONLY)
-                        result.success(true)
+                        val call = CallService.activeCall
+                        if (call != null) {
+                            call.answer(android.telecom.VideoProfile.STATE_AUDIO_ONLY)
+                            result.success(true)
+                        } else {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
+                                    val telecomManager = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                                    telecomManager.acceptRingingCall()
+                                    result.success(true)
+                                } else {
+                                    result.error("PERMISSION_DENIED", "Missing ANSWER_PHONE_CALLS permission", null)
+                                }
+                            } else {
+                                result.error("UNSUPPORTED", "acceptRingingCall requires API 26+", null)
+                            }
+                        }
                     } catch (e: Exception) {
                         result.error("FAILED", "Could not answer call: ${e.message}", null)
                     }
@@ -234,8 +276,20 @@ class MainActivity : FlutterActivity() {
                             } else {
                                 call.disconnect()
                             }
+                            result.success(true)
+                        } else {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
+                                    val telecomManager = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                                    val ended = telecomManager.endCall()
+                                    result.success(ended)
+                                } else {
+                                    result.error("PERMISSION_DENIED", "Missing ANSWER_PHONE_CALLS permission", null)
+                                }
+                            } else {
+                                result.error("UNSUPPORTED", "endCall requires API 28+", null)
+                            }
                         }
-                        result.success(true)
                     } catch (e: Exception) {
                         result.error("FAILED", "Could not end call: ${e.message}", null)
                     }
@@ -276,9 +330,25 @@ class MainActivity : FlutterActivity() {
                     if (number != null) {
                         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
                             try {
-                                val intent = Intent(Intent.ACTION_CALL)
-                                intent.data = Uri.parse("tel:$number")
-                                startActivity(intent)
+                                lastOutgoingNumber = number
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                    val telecomManager = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                                    val uri = Uri.parse("tel:$number")
+                                    telecomManager.placeCall(uri, android.os.Bundle())
+                                } else {
+                                    val intent = Intent(Intent.ACTION_CALL)
+                                    intent.data = Uri.parse("tel:$number")
+                                    startActivity(intent)
+                                }
+
+                                // Delay and forcefully bring the app back to the front
+                                // to hide the system dialer UI that pops up automatically
+                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                    val bringIntent = Intent(this@MainActivity, MainActivity::class.java)
+                                    bringIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                                    startActivity(bringIntent)
+                                }, 600)
+
                                 result.success(true)
                             } catch (e: Exception) {
                                 result.error("FAILED", "Could not make call: ${e.message}", null)
@@ -299,6 +369,8 @@ class MainActivity : FlutterActivity() {
         setupPhoneStateReceiver()
     }
 
+    private var lastOutgoingNumber: String = ""
+
     private fun setupPhoneStateReceiver() {
         if (phoneStateReceiver == null) {
             val filter = IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
@@ -307,6 +379,13 @@ class MainActivity : FlutterActivity() {
                     if (intent?.action == TelephonyManager.ACTION_PHONE_STATE_CHANGED) {
                         val stateStr = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
                         val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER) ?: ""
+                        
+                        var finalNumber = number
+                        if (finalNumber.isEmpty() && stateStr == TelephonyManager.EXTRA_STATE_OFFHOOK) {
+                            finalNumber = lastOutgoingNumber
+                        } else if (stateStr == TelephonyManager.EXTRA_STATE_IDLE) {
+                            lastOutgoingNumber = ""
+                        }
                         
                         runOnUiThread {
                             // Automatically bring the dashboard to front during active calls or ringing
@@ -318,7 +397,7 @@ class MainActivity : FlutterActivity() {
                             
                             methodChannel?.invokeMethod("onCallStateChanged", mapOf(
                                 "state" to (stateStr ?: ""),
-                                "number" to number
+                                "number" to finalNumber
                             ))
                         }
                     }

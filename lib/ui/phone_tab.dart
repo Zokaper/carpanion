@@ -113,9 +113,7 @@ class _PhoneTabState extends State<PhoneTab> {
       );
     }
 
-    if (provider.callState != 'IDLE') {
-      return _buildCallScreen(context, provider);
-    }
+    // Removing call screen override so the tab just displays recents/favorites.
 
     if (!_hasLoaded && !_isLoading) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -130,15 +128,62 @@ class _PhoneTabState extends State<PhoneTab> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        // Recents
-        if (_recents.isNotEmpty) ...[
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Recents
+          if (_recents.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.only(left: 4.0, bottom: 4.0),
+              child: Text(
+                "RECENT CALLS",
+                style: TextStyle(
+                  color: onSurface.withOpacity(0.6),
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ),
+            Column(
+              children: [
+                for (int i = 0; i < _recents.length; i += 2)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8.0),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: _RecentCallChip(
+                            title: _recents[i].name?.isNotEmpty == true ? _recents[i].name! : (_recents[i].number ?? 'Unknown'),
+                            subtitle: _recents[i].number ?? '',
+                            onTap: () => _makeCall(_recents[i].number ?? ''),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        if (i + 1 < _recents.length)
+                          Expanded(
+                            child: _RecentCallChip(
+                              title: _recents[i + 1].name?.isNotEmpty == true ? _recents[i + 1].name! : (_recents[i + 1].number ?? 'Unknown'),
+                              subtitle: _recents[i + 1].number ?? '',
+                              onTap: () => _makeCall(_recents[i + 1].number ?? ''),
+                            ),
+                          )
+                        else
+                          const Expanded(child: SizedBox.shrink()),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+          ],
+
+          // Favorites
           Padding(
             padding: const EdgeInsets.only(left: 4.0, bottom: 4.0),
             child: Text(
-              "RECENT CALLS",
+              "FAVORITES",
               style: TextStyle(
                 color: onSurface.withOpacity(0.6),
                 fontSize: 10,
@@ -147,56 +192,17 @@ class _PhoneTabState extends State<PhoneTab> {
               ),
             ),
           ),
-          Column(
-            children: [
-              for (int i = 0; i < _recents.length; i += 2)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8.0),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: _RecentCallChip(
-                          title: _recents[i].name?.isNotEmpty == true ? _recents[i].name! : (_recents[i].number ?? 'Unknown'),
-                          subtitle: _recents[i].number ?? '',
-                          onTap: () => _makeCall(_recents[i].number ?? ''),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      if (i + 1 < _recents.length)
-                        Expanded(
-                          child: _RecentCallChip(
-                            title: _recents[i + 1].name?.isNotEmpty == true ? _recents[i + 1].name! : (_recents[i + 1].number ?? 'Unknown'),
-                            subtitle: _recents[i + 1].number ?? '',
-                            onTap: () => _makeCall(_recents[i + 1].number ?? ''),
-                          ),
-                        )
-                      else
-                        const Expanded(child: SizedBox.shrink()),
-                    ],
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 4),
-        ],
-
-        // Favorites
-        Padding(
-          padding: const EdgeInsets.only(left: 4.0, bottom: 4.0),
-          child: Text(
-            "FAVORITES",
-            style: TextStyle(
-              color: onSurface.withOpacity(0.6),
-              fontSize: 10,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 1.5,
-            ),
-          ),
-        ),
-        Expanded(
-          child: _favorites.isEmpty 
-          ? Center(child: Text("No favorites found.", style: TextStyle(color: onSurface.withOpacity(0.54))))
-          : ListView.builder(
+          if (_favorites.isEmpty)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Text("No favorites found.", style: TextStyle(color: onSurface.withOpacity(0.54))),
+              ),
+            )
+          else
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
               itemCount: _favorites.length,
               itemBuilder: (context, index) {
                 final contact = _favorites[index];
@@ -210,12 +216,20 @@ class _PhoneTabState extends State<PhoneTab> {
                 );
               },
             ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
-  Widget _buildCallScreen(BuildContext context, DashboardProvider provider) {
+// Helper methods moved to CallScreenWidget
+}
+
+class CallScreenWidget extends StatelessWidget {
+  const CallScreenWidget({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = Provider.of<DashboardProvider>(context);
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
     final state = provider.callState;
@@ -239,163 +253,156 @@ class _PhoneTabState extends State<PhoneTab> {
       pillColor = Colors.lightBlueAccent;
     }
 
-    return SingleChildScrollView(
-      child: Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surface.withOpacity(0.9),
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: onSurface.withOpacity(0.08)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.25),
-              blurRadius: 20,
-              offset: const Offset(0, 10),
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: pillColor.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: pillColor.withOpacity(0.4),
-                ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      color: pillColor,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    pillText,
-                    style: TextStyle(
-                      color: pillColor,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.0,
-                    ),
-                  ),
-                ],
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: onSurface.withOpacity(0.05)),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: pillColor.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: pillColor.withOpacity(0.4),
               ),
             ),
-            const SizedBox(height: 24),
-            Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  colors: [
-                    theme.colorScheme.primary,
-                    theme.colorScheme.secondary,
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: theme.colorScheme.primary.withOpacity(0.3),
-                    blurRadius: 12,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Center(
-                child: Text(
-                  _getInitials(provider.callName),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 28,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              provider.callName.isNotEmpty ? provider.callName : "Unknown Caller",
-              style: TextStyle(
-                color: onSurface,
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-              ),
-              textAlign: TextAlign.center,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 4),
-            if (provider.callNumber.isNotEmpty)
-              Text(
-                provider.callNumber,
-                style: TextStyle(
-                  color: onSurface.withOpacity(0.5),
-                  fontSize: 14,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            const SizedBox(height: 16),
-            if (isActive)
-              Text(
-                durationStr,
-                style: TextStyle(
-                  color: onSurface,
-                  fontSize: 28,
-                  fontWeight: FontWeight.w900,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
-            const SizedBox(height: 24),
-            Wrap(
-              alignment: WrapAlignment.center,
-              spacing: 32,
-              runSpacing: 16,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                if (isRinging) ...[
-                  _buildCallActionButton(
-                    icon: Icons.call,
-                    color: Colors.greenAccent,
-                    label: "Answer",
-                    onPressed: provider.answerCall,
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: pillColor,
+                    shape: BoxShape.circle,
                   ),
-                  _buildCallActionButton(
-                    icon: Icons.call_end,
-                    color: Colors.redAccent,
-                    label: "Decline",
-                    onPressed: provider.endCall,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  pillText,
+                  style: TextStyle(
+                    color: pillColor,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.0,
                   ),
-                ] else ...[
-                  _buildCallActionButton(
-                    icon: provider.isMuted ? Icons.mic_off : Icons.mic,
-                    color: provider.isMuted ? Colors.amber : onSurface.withOpacity(0.7),
-                    label: provider.isMuted ? "Unmute" : "Mute",
-                    onPressed: provider.toggleMute,
-                  ),
-                  _buildCallActionButton(
-                    icon: Icons.call_end,
-                    color: Colors.redAccent,
-                    label: "End Call",
-                    size: 64,
-                    iconSize: 32,
-                    onPressed: provider.endCall,
-                  ),
-                ],
+                ),
               ],
             ),
-            const SizedBox(height: 10),
+          ),
+          const Spacer(flex: 2),
+          Container(
+            width: 80,
+            height: 80,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                colors: [
+                  theme.colorScheme.primary,
+                  theme.colorScheme.secondary,
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: theme.colorScheme.primary.withOpacity(0.3),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Center(
+              child: Text(
+                _getInitials(provider.callName),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+          const Spacer(flex: 1),
+          Text(
+            provider.callName.isNotEmpty ? provider.callName : "Unknown Caller",
+            style: TextStyle(
+              color: onSurface,
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          if (provider.callNumber.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              provider.callNumber,
+              style: TextStyle(
+                color: onSurface.withOpacity(0.5),
+                fontSize: 14,
+              ),
+              textAlign: TextAlign.center,
+            ),
           ],
-        ),
+          if (isActive) ...[
+            const Spacer(flex: 1),
+            Text(
+              durationStr,
+              style: TextStyle(
+                color: onSurface,
+                fontSize: 28,
+                fontWeight: FontWeight.w900,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ],
+          const Spacer(flex: 2),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 32,
+            runSpacing: 16,
+            children: [
+              if (isRinging) ...[
+                _buildCallActionButton(
+                  icon: Icons.call,
+                  color: Colors.greenAccent,
+                  label: "Answer",
+                  onPressed: provider.answerCall,
+                ),
+                _buildCallActionButton(
+                  icon: Icons.call_end,
+                  color: Colors.redAccent,
+                  label: "Decline",
+                  onPressed: provider.endCall,
+                ),
+              ] else ...[
+                _buildCallActionButton(
+                  icon: provider.isMuted ? Icons.mic_off : Icons.mic,
+                  color: provider.isMuted ? Colors.amber : onSurface.withOpacity(0.7),
+                  label: provider.isMuted ? "Unmute" : "Mute",
+                  onPressed: provider.toggleMute,
+                ),
+                _buildCallActionButton(
+                  icon: Icons.call_end,
+                  color: Colors.redAccent,
+                  label: "End Call",
+                  size: 64,
+                  iconSize: 32,
+                  onPressed: provider.endCall,
+                ),
+              ],
+            ],
+          ),
+        ],
       ),
     );
   }
