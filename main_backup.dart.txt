@@ -1,0 +1,1082 @@
+import 'dart:async';
+import 'dart:ui';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:provider/provider.dart';
+import 'package:android_intent_plus/android_intent.dart';
+import 'speedometer_widget.dart';
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Set preferred orientation to landscape only
+  SystemChrome.setPreferredOrientations([
+    DeviceOrientation.landscapeLeft,
+    DeviceOrientation.landscapeRight,
+  ]);
+
+  // Hide system status and navigation bars for immersive in-car dashboard experience
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => DashboardProvider()..initialize(),
+      child: const MyApp(),
+    ),
+  );
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Car Dashboard',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: const Color(0xFF09090E),
+        cardColor: const Color(0xFF151525),
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF00E5FF),
+          secondary: Color(0xFF2979FF),
+          surface: Color(0xFF151525),
+        ),
+      ),
+      home: const DashboardScreen(),
+    );
+  }
+}
+
+class DashboardProvider with ChangeNotifier {
+  bool _isKmph = true;
+  bool _isDemoMode = false;
+  bool _isPlaying = false;
+  LocationPermission _permission = LocationPermission.denied;
+  bool _serviceEnabled = false;
+  String _errorMessage = '';
+
+  // Now Playing state variables
+  String _currentTrack = 'Sunset Drive';
+  String _currentArtist = 'Lofi Ambient';
+  String _currentAlbum = 'Chill Beats Vol. 1';
+  int _trackIndex = 0;
+  String _activePlaylist = 'Chill Beats';
+
+  // Playlist Track Lists Mock Data
+  final Map<String, List<Map<String, String>>> _playlists = {
+    'Chill Beats': [
+      {'track': 'Sunset Drive', 'artist': 'Lofi Ambient', 'album': 'Chill Beats Vol. 1'},
+      {'track': 'Midnight Chill', 'artist': 'After Hours', 'album': 'Chill Beats Vol. 1'},
+      {'track': 'Rainy Road', 'artist': 'Tokyo Cafe', 'album': 'Chill Beats Vol. 1'},
+    ],
+    'Driving Anthems': [
+      {'track': 'Neon Horizon', 'artist': 'Synthwave Rider', 'album': 'Speedway Classics'},
+      {'track': 'Nightcall', 'artist': 'Kavinsky', 'album': 'Outrun Legends'},
+      {'track': 'Turbo Charged', 'artist': 'Overdrive', 'album': 'Speedway Classics'},
+    ],
+    'Roadtrip Classics': [
+      {'track': 'Pacific Highway', 'artist': 'Retro Wave', 'album': 'California Cruise'},
+      {'track': 'Summer Breeze', 'artist': 'The Cruisers', 'album': 'California Cruise'},
+      {'track': 'Infinite Road', 'artist': 'Horizon', 'album': 'Travel Anthems'},
+    ],
+  };
+
+  bool get isKmph => _isKmph;
+  bool get isDemoMode => _isDemoMode;
+  bool get isPlaying => _isPlaying;
+  LocationPermission get permission => _permission;
+  bool get serviceEnabled => _serviceEnabled;
+  String get errorMessage => _errorMessage;
+
+  String get currentTrack => _currentTrack;
+  String get currentArtist => _currentArtist;
+  String get currentAlbum => _currentAlbum;
+  String get activePlaylist => _activePlaylist;
+
+  void toggleUnit() {
+    _isKmph = !_isKmph;
+    notifyListeners();
+  }
+
+  void toggleDemoMode() {
+    _isDemoMode = !_isDemoMode;
+    notifyListeners();
+  }
+
+  void setPlaying(bool state) {
+    _isPlaying = state;
+    notifyListeners();
+  }
+
+  void selectPlaylist(String playlistName) {
+    if (_playlists.containsKey(playlistName)) {
+      _activePlaylist = playlistName;
+      _trackIndex = 0;
+      _updateTrackDetails();
+      _isPlaying = true; // Auto-play on tap
+      notifyListeners();
+    }
+  }
+
+  void nextTrack() {
+    final tracks = _playlists[_activePlaylist] ?? [];
+    if (tracks.isNotEmpty) {
+      _trackIndex = (_trackIndex + 1) % tracks.length;
+      _updateTrackDetails();
+      notifyListeners();
+    }
+  }
+
+  void previousTrack() {
+    final tracks = _playlists[_activePlaylist] ?? [];
+    if (tracks.isNotEmpty) {
+      _trackIndex = (_trackIndex - 1 + tracks.length) % tracks.length;
+      _updateTrackDetails();
+      notifyListeners();
+    }
+  }
+
+  void _updateTrackDetails() {
+    final tracks = _playlists[_activePlaylist] ?? [];
+    if (tracks.isNotEmpty && _trackIndex < tracks.length) {
+      _currentTrack = tracks[_trackIndex]['track']!;
+      _currentArtist = tracks[_trackIndex]['artist']!;
+      _currentAlbum = tracks[_trackIndex]['album']!;
+    }
+  }
+
+  Future<void> initialize() async {
+    await checkLocationSettingsAndPermissions();
+  }
+
+  Future<void> checkLocationSettingsAndPermissions() async {
+    try {
+      _serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!_serviceEnabled) {
+        _errorMessage = "GPS is disabled. Please enable location services.";
+        notifyListeners();
+        return;
+      }
+
+      _permission = await Geolocator.checkPermission();
+      if (_permission == LocationPermission.denied) {
+        _permission = await Geolocator.requestPermission();
+        if (_permission == LocationPermission.denied) {
+          _errorMessage = "Location permissions are denied.";
+          notifyListeners();
+          return;
+        }
+      }
+
+      if (_permission == LocationPermission.deniedForever) {
+        _errorMessage = "GPS permissions are permanently denied.";
+        notifyListeners();
+        return;
+      }
+
+      _errorMessage = '';
+    } catch (e) {
+      _errorMessage = "Failed to initialize GPS: $e";
+    }
+    notifyListeners();
+  }
+}
+
+class DashboardScreen extends StatelessWidget {
+  const DashboardScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = Provider.of<DashboardProvider>(context);
+
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
+          child: Column(
+            children: [
+              // Top Header Bar
+              const HeaderBarWidget(),
+              const SizedBox(height: 10),
+              
+              // Warning banner if permissions/services are missing
+              if (provider.errorMessage.isNotEmpty && !provider.isDemoMode)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFF3D00).withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFFF3D00).withOpacity(0.3)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.warning_amber_rounded, color: Color(0xFFFF3D00), size: 20),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          provider.errorMessage,
+                          style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: provider.checkLocationSettingsAndPermissions,
+                        child: const Text("RETRY", style: TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold)),
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton(
+                        onPressed: provider.toggleDemoMode,
+                        child: const Text("USE DEMO MODE", style: TextStyle(color: Colors.white70)),
+                      ),
+                    ],
+                  ),
+                ),
+
+              // Main columns: Speed (7), Media Controls (8), Favorites Sidebar (6)
+              Expanded(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Left Column: Speedometer
+                    const Expanded(
+                      flex: 7,
+                      child: SpeedometerWidget(),
+                    ),
+                    const SizedBox(width: 14),
+                    
+                    // Center Column: Media Control Panel
+                    const Expanded(
+                      flex: 8,
+                      child: MediaControlPanel(),
+                    ),
+                    const SizedBox(width: 14),
+                    
+                    // Right Column: Favorites Sidebar
+                    const Expanded(
+                      flex: 6,
+                      child: FavoritesSidebar(),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ----------------------------------------------------------------------------
+// HEADER BAR WIDGET
+// ----------------------------------------------------------------------------
+class HeaderBarWidget extends StatelessWidget {
+  const HeaderBarWidget({super.key});
+
+  String _getMonthName(int month) {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return months[month - 1];
+  }
+
+  String _getWeekdayName(int day) {
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    return days[day % 7];
+  }
+
+  String _formatTime(DateTime time) {
+    final hour = time.hour > 12 ? time.hour - 12 : (time.hour == 0 ? 12 : time.hour);
+    final amPm = time.hour >= 12 ? "PM" : "AM";
+    final minute = time.minute.toString().padLeft(2, '0');
+    final second = time.second.toString().padLeft(2, '0');
+    return "$hour:$minute:$second $amPm";
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = Provider.of<DashboardProvider>(context);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF151525),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.06)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          // App Title
+          Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF00E5FF),
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(color: Color(0xFF00E5FF), blurRadius: 6),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                "APEX DRIVE",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 14,
+                  letterSpacing: 2,
+                ),
+              ),
+            ],
+          ),
+          
+          // Time and Date Display
+          StreamBuilder<DateTime>(
+            stream: Stream.periodic(const Duration(seconds: 1), (_) => DateTime.now()),
+            initialData: DateTime.now(),
+            builder: (context, snapshot) {
+              final now = snapshot.data ?? DateTime.now();
+              return Row(
+                children: [
+                  Text(
+                    _formatTime(now),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Container(width: 1, height: 12, color: Colors.white24),
+                  const SizedBox(width: 10),
+                  Text(
+                    "${_getWeekdayName(now.weekday)}, ${_getMonthName(now.month)} ${now.day}",
+                    style: const TextStyle(
+                      color: Colors.white60,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+
+          // Demo Mode controls / GPS status
+          GestureDetector(
+            onTap: provider.toggleDemoMode,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: provider.isDemoMode
+                    ? const Color(0xFFFF9100).withOpacity(0.15)
+                    : Colors.white.withOpacity(0.04),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: provider.isDemoMode
+                      ? const Color(0xFFFF9100).withOpacity(0.4)
+                      : Colors.white.withOpacity(0.08),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    provider.isDemoMode ? Icons.science : Icons.directions_car,
+                    color: provider.isDemoMode ? const Color(0xFFFF9100) : Colors.white60,
+                    size: 12,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    provider.isDemoMode ? "DEMO MODE ACTIVE" : "SIMULATE DRIVE",
+                    style: TextStyle(
+                      color: provider.isDemoMode ? const Color(0xFFFF9100) : Colors.white60,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ----------------------------------------------------------------------------
+// MEDIA CONTROL PANEL WIDGET
+// ----------------------------------------------------------------------------
+class MediaControlPanel extends StatelessWidget {
+  const MediaControlPanel({super.key});
+
+  Future<void> _sendYTMusicIntent(BuildContext context, String action, DashboardProvider provider, bool isNext) async {
+    // Cycle tracks in provider state
+    if (isNext) {
+      provider.nextTrack();
+    } else {
+      provider.previousTrack();
+    }
+
+    final intent = AndroidIntent(
+      action: action,
+      package: 'com.google.android.apps.youtube.music',
+    );
+    try {
+      await intent.sendBroadcast();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Intent failed. Make sure YouTube Music is installed: $e"),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = Provider.of<DashboardProvider>(context);
+    final isPlaying = provider.isPlaying;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF151525),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: Colors.white.withOpacity(0.08)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 15,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          // Header / Active source indicator
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.music_note, color: Color(0xFF00E5FF), size: 14),
+              const SizedBox(width: 8),
+              Text(
+                "YOUTUBE MUSIC CONTROL",
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.6),
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ],
+          ),
+
+          // Now Playing Section (Mock metadata with rotating vinyl album cover)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.02),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white.withOpacity(0.04)),
+            ),
+            child: Row(
+              children: [
+                RotatingAlbumArt(isPlaying: isPlaying, playlist: provider.activePlaylist),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        provider.currentTrack,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        "${provider.currentArtist} • ${provider.currentAlbum}",
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.6),
+                          fontSize: 10,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Animated Visualizer (compact height to prevent overflow)
+          SizedBox(
+            height: 40,
+            child: Center(
+              child: AudioVisualizerWidget(isAnimating: isPlaying),
+            ),
+          ),
+
+          // Extra Large Control Buttons (Compact bounds to resolve overflow, min target 60x60)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 2.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // Previous Button
+                _buildControlButton(
+                  icon: Icons.skip_previous_rounded,
+                  size: 26,
+                  onPressed: () => _sendYTMusicIntent(
+                    context,
+                    'com.google.android.youtube.music.pendingintent.controller_widget_previous',
+                    provider,
+                    false,
+                  ),
+                ),
+                const SizedBox(width: 20),
+                
+                // Play / Pause Button
+                _buildPlayPauseButton(
+                  isPlaying: isPlaying,
+                  onPressed: () {
+                    final nextState = !isPlaying;
+                    provider.setPlaying(nextState);
+                    final intentAction = nextState
+                        ? 'com.google.android.youtube.music.pendingintent.controller_widget_play'
+                        : 'com.google.android.youtube.music.pendingintent.controller_widget_pause';
+                    
+                    final intent = AndroidIntent(
+                      action: intentAction,
+                      package: 'com.google.android.apps.youtube.music',
+                    );
+                    intent.sendBroadcast().catchError((e) {
+                      debugPrint("Failed to send Play/Pause broadcast: $e");
+                    });
+                  },
+                ),
+                const SizedBox(width: 20),
+                
+                // Next Button
+                _buildControlButton(
+                  icon: Icons.skip_next_rounded,
+                  size: 26,
+                  onPressed: () => _sendYTMusicIntent(
+                    context,
+                    'com.google.android.youtube.music.pendingintent.controller_widget_next',
+                    provider,
+                    true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildControlButton({
+    required IconData icon,
+    required double size,
+    required VoidCallback onPressed,
+  }) {
+    return GestureDetector(
+      onTap: onPressed,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Container(
+          width: 60,
+          height: 60,
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.04),
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white.withOpacity(0.08)),
+          ),
+          child: Icon(
+            icon,
+            color: Colors.white,
+            size: size,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlayPauseButton({
+    required bool isPlaying,
+    required VoidCallback onPressed,
+  }) {
+    return GestureDetector(
+      onTap: onPressed,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Container(
+          width: 76,
+          height: 76,
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF00E5FF), Color(0xFF2979FF)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF00E5FF).withOpacity(0.3),
+                blurRadius: 12,
+                offset: const Offset(0, 3),
+              )
+            ],
+          ),
+          child: Icon(
+            isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+            color: Colors.black,
+            size: 38,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Rotating record widget for Mock cover art
+class RotatingAlbumArt extends StatefulWidget {
+  final bool isPlaying;
+  final String playlist;
+  const RotatingAlbumArt({super.key, required this.isPlaying, required this.playlist});
+
+  @override
+  State<RotatingAlbumArt> createState() => _RotatingAlbumArtState();
+}
+
+class _RotatingAlbumArtState extends State<RotatingAlbumArt> with SingleTickerProviderStateMixin {
+  late AnimationController _rotationController;
+
+  @override
+  void initState() {
+    super.initState();
+    _rotationController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 8),
+    );
+    if (widget.isPlaying) {
+      _rotationController.repeat();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant RotatingAlbumArt oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isPlaying) {
+      _rotationController.repeat();
+    } else {
+      _rotationController.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _rotationController.dispose();
+    super.dispose();
+  }
+
+  Color _getPlaylistColor(String playlist) {
+    switch (playlist) {
+      case 'Chill Beats':
+        return const Color(0xFF9C27B0); // Purple
+      case 'Driving Anthems':
+        return const Color(0xFFFF5722); // Orange-Red
+      case 'Roadtrip Classics':
+        return const Color(0xFF009688); // Teal
+      default:
+        return const Color(0xFF00E5FF);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final themeColor = _getPlaylistColor(widget.playlist);
+    
+    return RotationTransition(
+      turns: _rotationController,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: RadialGradient(
+            colors: [
+              themeColor.withOpacity(0.9),
+              Colors.black87,
+            ],
+            stops: const [0.65, 1.0],
+          ),
+          border: Border.all(color: Colors.white.withOpacity(0.12), width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: themeColor.withOpacity(0.3),
+              blurRadius: 6,
+            )
+          ],
+        ),
+        child: Center(
+          child: Container(
+            width: 12,
+            height: 12,
+            decoration: const BoxDecoration(
+              color: Color(0xFF09090E),
+              shape: BoxShape.circle,
+            ),
+            child: Center(
+              child: Container(
+                width: 4,
+                height: 4,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF00E5FF),
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Animated sound wave bars (compact)
+class AudioVisualizerWidget extends StatefulWidget {
+  final bool isAnimating;
+  const AudioVisualizerWidget({super.key, required this.isAnimating});
+
+  @override
+  State<AudioVisualizerWidget> createState() => _AudioVisualizerWidgetState();
+}
+
+class _AudioVisualizerWidgetState extends State<AudioVisualizerWidget> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  final List<double> _barHeights = [0.3, 0.7, 0.5, 0.9, 0.4, 0.8, 0.6, 0.2];
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(covariant AudioVisualizerWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isAnimating) {
+      if (!_controller.isAnimating) _controller.repeat(reverse: true);
+    } else {
+      _controller.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return SizedBox(
+          height: 36,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: List.generate(_barHeights.length, (index) {
+              final factor = widget.isAnimating
+                  ? (index % 2 == 0 ? _controller.value : 1.0 - _controller.value)
+                  : 0.1;
+              final height = 8.0 + (_barHeights[index] * 24.0 * factor);
+
+              return Container(
+                width: 4,
+                height: height,
+                margin: const EdgeInsets.symmetric(horizontal: 3),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      const Color(0xFF00E5FF),
+                      const Color(0xFF2979FF).withOpacity(0.5 + (0.5 * factor)),
+                    ],
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                  ),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              );
+            }),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ----------------------------------------------------------------------------
+// FAVORITES SIDEBAR WIDGET
+// ----------------------------------------------------------------------------
+class FavoritesSidebar extends StatelessWidget {
+  const FavoritesSidebar({super.key});
+
+  Future<void> _launchPlaylist(BuildContext context, String url, String playlistTitle) async {
+    // 1. Update metadata in our provider & turn visualizer on
+    final provider = Provider.of<DashboardProvider>(context, listen: false);
+    provider.selectPlaylist(playlistTitle);
+
+    // 2. Launch YouTube Music
+    final intent = AndroidIntent(
+      action: 'android.intent.action.VIEW',
+      data: url,
+      package: 'com.google.android.apps.youtube.music', // Direct YTM routing
+    );
+    
+    try {
+      await intent.launch();
+      
+      // 3. Delayed return: wait 2.5 seconds, then bring our app back to the front!
+      Future.delayed(const Duration(milliseconds: 2500), () async {
+        final returnIntent = AndroidIntent(
+          action: 'android.intent.action.MAIN',
+          category: 'android.intent.category.LAUNCHER',
+          package: 'com.example.car_dashboard',
+          flags: [0x10100000], // FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+        );
+        try {
+          await returnIntent.launch();
+        } catch (e) {
+          debugPrint("Return-to-foreground failed: $e");
+        }
+      });
+    } catch (e) {
+      // Fallback intent without direct package targeting in case YT Music is not installed
+      final fallbackIntent = AndroidIntent(
+        action: 'android.intent.action.VIEW',
+        data: url,
+      );
+      try {
+        await fallbackIntent.launch();
+      } catch (err) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Could not open playlist URL: $err"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Sidebar Header
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6.0, left: 4.0),
+          child: Text(
+            "QUICK FAVORITES",
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.6),
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1.5,
+            ),
+          ),
+        ),
+        
+        // Playlist 1
+        Expanded(
+          child: _PlaylistCard(
+            title: "Chill Beats",
+            subtitle: "Ambient Driving Focus",
+            startColor: const Color(0xFF6A1B9A), // Purple
+            endColor: const Color(0xFF8E24AA),
+            icon: Icons.nightlife,
+            onTap: () => _launchPlaylist(
+              context,
+              'https://music.youtube.com/playlist?list=PL4fGxFUtKBFKj4C0QxPz-5v2k9Q4X-PjG',
+              'Chill Beats',
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+
+        // Playlist 2
+        Expanded(
+          child: _PlaylistCard(
+            title: "Driving Anthems",
+            subtitle: "High Energy Beats",
+            startColor: const Color(0xFFBF360C), // Deep Orange
+            endColor: const Color(0xFFE64A19),
+            icon: Icons.bolt,
+            onTap: () => _launchPlaylist(
+              context,
+              'https://music.youtube.com/playlist?list=PL4fGxFUtKBFLp2pXoK8vUfC6_t4l0L3J1',
+              'Driving Anthems',
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+
+        // Playlist 3
+        Expanded(
+          child: _PlaylistCard(
+            title: "Roadtrip Classics",
+            subtitle: "Travel Classics",
+            startColor: const Color(0xFF004D40), // Dark Teal
+            endColor: const Color(0xFF00796B),
+            icon: Icons.explore_outlined,
+            onTap: () => _launchPlaylist(
+              context,
+              'https://music.youtube.com/playlist?list=PL4fGxFUtKBFKvWn_LqX6pGj8kFz6Q7G4H',
+              'Roadtrip Classics',
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PlaylistCard extends StatefulWidget {
+  final String title;
+  final String subtitle;
+  final Color startColor;
+  final Color endColor;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  const _PlaylistCard({
+    required this.title,
+    required this.subtitle,
+    required this.startColor,
+    required this.endColor,
+    required this.icon,
+    required this.onTap,
+  });
+
+  @override
+  State<_PlaylistCard> createState() => _PlaylistCardState();
+}
+
+class _PlaylistCardState extends State<_PlaylistCard> with SingleTickerProviderStateMixin {
+  double _scale = 1.0;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTapDown: (_) => setState(() => _scale = 0.96),
+      onTapUp: (_) => setState(() => _scale = 1.0),
+      onTapCancel: () => setState(() => _scale = 1.0),
+      onTap: widget.onTap,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: AnimatedScale(
+          scale: _scale,
+          duration: const Duration(milliseconds: 100),
+          curve: Curves.easeOut,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [widget.startColor, widget.endColor],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white.withOpacity(0.12)),
+              boxShadow: [
+                BoxShadow(
+                  color: widget.startColor.withOpacity(0.25),
+                  blurRadius: 6,
+                  offset: const Offset(0, 3),
+                )
+              ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    widget.icon,
+                    color: Colors.white,
+                    size: 16,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.title,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 1),
+                      Text(
+                        widget.subtitle,
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.7),
+                          fontSize: 9,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                
+                Icon(
+                  Icons.play_circle_outline,
+                  color: Colors.white.withOpacity(0.8),
+                  size: 20,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
