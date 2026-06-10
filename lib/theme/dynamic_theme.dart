@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 class DynamicThemeProvider with ChangeNotifier {
@@ -73,6 +74,11 @@ class DynamicThemeProvider with ChangeNotifier {
       primary = Color.lerp(_nightPrimary, _dayPrimary, t)!;
       background = Color.lerp(_nightBackground, _dayBackground, t)!;
       card = Color.lerp(_nightCard, _dayCard, t)!;
+      
+      // Darken primary color during the middle of the transition for better contrast on grey background
+      final double dip = math.sin(t * math.pi);
+      primary = Color.lerp(primary, Colors.black, dip * 0.4)!;
+
       brightness = t > 0.5 ? Brightness.light : Brightness.dark;
       text = brightness == Brightness.light ? _dayText : _nightText;
     } else if (hours >= 12.0 && hours < 18.0) {
@@ -81,6 +87,11 @@ class DynamicThemeProvider with ChangeNotifier {
       primary = Color.lerp(_dayPrimary, _eveningPrimary, t)!;
       background = Color.lerp(_dayBackground, _eveningBackground, t)!;
       card = Color.lerp(_dayCard, _eveningCard, t)!;
+
+      // Darken primary color during the middle of the transition for better contrast on grey background
+      final double dip = math.sin(t * math.pi);
+      primary = Color.lerp(primary, Colors.black, dip * 0.4)!;
+
       brightness = t > 0.5 ? Brightness.dark : Brightness.light;
       text = brightness == Brightness.light ? _dayText : _eveningText;
     } else if (hours >= 18.0 && hours < 22.0) {

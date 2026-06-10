@@ -43,7 +43,7 @@ class _PhoneTabState extends State<PhoneTab> {
       List<Contact> contacts = [];
       final status = await FlutterContacts.permissions.request(PermissionType.read);
       if (status == PermissionStatus.granted) {
-        contacts = await FlutterContacts.getAll(properties: ContactProperties.all);
+        contacts = await FlutterContacts.getAll(properties: ContactProperties.allProperties);
       }
 
       if (mounted) {

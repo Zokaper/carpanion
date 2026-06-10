@@ -21,6 +21,33 @@ class SpeedometerWidget extends StatelessWidget {
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
 
+    Color speedColor = onSurface;
+    double? warningPct;
+    double? dangerPct;
+
+    if (provider.speedLimit != '?') {
+      final intLimit = int.tryParse(provider.speedLimit);
+      if (intLimit != null) {
+        // provider.speed is in m/s, so we calculate km/h for the Saher logic
+        final currentSpeedKmph = provider.speed * 3.6;
+        final saherThreshold = intLimit <= 120 ? intLimit + 10 : intLimit + 5;
+        
+        if (currentSpeedKmph >= saherThreshold) {
+          speedColor = Colors.red;
+        } else if (currentSpeedKmph >= saherThreshold - 5) {
+          speedColor = Colors.orange;
+        }
+
+        double thresholdUnit = provider.isKmph ? saherThreshold.toDouble() : saherThreshold / 1.60934;
+        double warningUnit = provider.isKmph ? (saherThreshold - 5).toDouble() : (saherThreshold - 5) / 1.60934;
+        
+        warningPct = (warningUnit / maxSpeed).clamp(0.0, 1.0);
+        dangerPct = (thresholdUnit / maxSpeed).clamp(0.0, 1.0);
+      }
+    }
+
+    final progressBarColor = theme.colorScheme.primary;
+
     return Container(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
       decoration: BoxDecoration(
@@ -46,7 +73,9 @@ class SpeedometerWidget extends StatelessWidget {
                           painter: _SpeedGaugePainter(
                             percentage: speedPercent,
                             trackColor: onSurface.withOpacity(0.05),
-                            progressColor: theme.colorScheme.primary,
+                            progressColor: progressBarColor,
+                            warningPercentage: warningPct,
+                            dangerPercentage: dangerPct,
                           ),
                         ),
                       ),
@@ -59,7 +88,7 @@ class SpeedometerWidget extends StatelessWidget {
                         Text(
                           speedString,
                           style: TextStyle(
-                            color: onSurface,
+                            color: speedColor,
                             fontSize: 68,
                             fontWeight: FontWeight.w700,
                             height: 1.0,
@@ -150,30 +179,95 @@ class SpeedometerWidget extends StatelessWidget {
                 ),
                 const Spacer(),
                 if (provider.dashcamRecording)
-                   Row(
-                     children: [
-                       Container(
-                         width: 8, height: 8,
-                         decoration: const BoxDecoration(
-                           color: Colors.red,
-                           shape: BoxShape.circle,
+                   GestureDetector(
+                     onTap: () {
+                       showDialog(
+                         context: context,
+                         builder: (context) => AlertDialog(
+                           backgroundColor: Theme.of(context).colorScheme.surface,
+                           title: const Text('Stop Recording?', style: TextStyle(fontWeight: FontWeight.bold)),
+                           content: const Text('Are you sure you want to stop the dashcam recording?'),
+                           actions: [
+                             TextButton(
+                               onPressed: () => Navigator.pop(context),
+                               child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.bold)),
+                             ),
+                             TextButton(
+                               onPressed: () {
+                                 provider.stopDashcam();
+                                 Navigator.pop(context);
+                               },
+                               child: const Text('Stop', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+                             ),
+                           ],
                          ),
-                       ),
-                       const SizedBox(width: 4),
-                       const Text("REC", style: TextStyle(color: Colors.red, fontSize: 10, fontWeight: FontWeight.bold)),
-                       const SizedBox(width: 12),
-                     ],
+                       );
+                     },
+                     child: Row(
+                       children: [
+                         Container(
+                           width: 8, height: 8,
+                           decoration: const BoxDecoration(
+                             color: Colors.red,
+                             shape: BoxShape.circle,
+                           ),
+                         ),
+                         const SizedBox(width: 4),
+                         const Text("REC", style: TextStyle(color: Colors.red, fontSize: 10, fontWeight: FontWeight.bold)),
+                         const SizedBox(width: 12),
+                       ],
+                     ),
                    ),
-                Icon(
-                  provider.hasLocationPermission ? Icons.gps_fixed : Icons.gps_off,
-                  color: provider.hasLocationPermission ? onSurface.withOpacity(0.3) : Colors.red,
-                  size: 14,
-                ),
+                if (provider.hasLocationPermission)
+                  _buildGpsSignalIndicator(provider.accuracy, onSurface)
+                else
+                  const Icon(
+                    Icons.gps_off,
+                    color: Colors.red,
+                    size: 14,
+                  ),
               ],
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildGpsSignalIndicator(double accuracy, Color onSurface) {
+    IconData icon;
+    Color color;
+
+    if (accuracy <= 0.0) {
+      icon = Icons.signal_cellular_0_bar;
+      color = onSurface.withOpacity(0.3);
+    } else if (accuracy <= 8.0) {
+      icon = Icons.signal_cellular_4_bar;
+      color = Colors.green;
+    } else if (accuracy <= 15.0) {
+      icon = Icons.signal_cellular_4_bar;
+      color = Colors.orange;
+    } else if (accuracy <= 30.0) {
+      icon = Icons.signal_cellular_4_bar;
+      color = Colors.orange;
+    } else {
+      icon = Icons.signal_cellular_4_bar;
+      color = Colors.red;
+    }
+
+    return Row(
+      children: [
+        Icon(icon, color: color, size: 14),
+        const SizedBox(width: 4),
+        Text(
+          accuracy > 0.0 ? "${accuracy.toStringAsFixed(0)}m" : "--",
+          style: TextStyle(
+            color: color,
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ],
     );
   }
 
@@ -211,11 +305,15 @@ class _SpeedGaugePainter extends CustomPainter {
   final double percentage;
   final Color trackColor;
   final Color progressColor;
+  final double? warningPercentage;
+  final double? dangerPercentage;
 
   _SpeedGaugePainter({
     required this.percentage,
     required this.trackColor,
     required this.progressColor,
+    this.warningPercentage,
+    this.dangerPercentage,
   });
 
   @override
@@ -229,17 +327,38 @@ class _SpeedGaugePainter extends CustomPainter {
     const sweepAngle = 270 * pi / 180;
 
     final trackPaint = Paint()
-      ..color = trackColor
       ..style = PaintingStyle.stroke
       ..strokeWidth = 12
       ..strokeCap = StrokeCap.round;
 
-    final progressPaint = Paint()
-      ..color = progressColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 12
-      ..strokeCap = StrokeCap.round;
+    if (warningPercentage != null && dangerPercentage != null) {
+      final gradient = SweepGradient(
+        startAngle: 0.0,
+        endAngle: sweepAngle,
+        colors: [
+          trackColor,
+          trackColor,
+          Colors.orange.withOpacity(0.4),
+          Colors.orange.withOpacity(0.4),
+          Colors.red.withOpacity(0.4),
+          Colors.red.withOpacity(0.4),
+        ],
+        stops: [
+          0.0,
+          warningPercentage!,
+          warningPercentage!,
+          dangerPercentage!,
+          dangerPercentage!,
+          1.0,
+        ],
+        transform: GradientRotation(startAngle),
+      );
+      trackPaint.shader = gradient.createShader(Rect.fromCircle(center: center, radius: radius));
+    } else {
+      trackPaint.color = trackColor;
+    }
 
+    // Draw base track with colored redlines via gradient
     canvas.drawArc(
       Rect.fromCircle(center: center, radius: radius),
       startAngle,
@@ -247,6 +366,12 @@ class _SpeedGaugePainter extends CustomPainter {
       false,
       trackPaint,
     );
+
+    final progressPaint = Paint()
+      ..color = progressColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 12
+      ..strokeCap = StrokeCap.round;
 
     canvas.drawArc(
       Rect.fromCircle(center: center, radius: radius),
@@ -259,6 +384,8 @@ class _SpeedGaugePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _SpeedGaugePainter oldDelegate) {
-    return oldDelegate.percentage != percentage;
+    return oldDelegate.percentage != percentage ||
+           oldDelegate.warningPercentage != warningPercentage ||
+           oldDelegate.dangerPercentage != dangerPercentage;
   }
 }
