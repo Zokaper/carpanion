@@ -32,8 +32,8 @@ class YouTubeService extends ChangeNotifier {
     String cleanTitle = youtubeTitle
       .replaceAll(RegExp(r'\(.*?\)'), '')
       .replaceAll(RegExp(r'\[.*?\]'), '')
-      .replaceAll(RegExp(r'(?i)official audio'), '')
-      .replaceAll(RegExp(r'(?i)music video'), '')
+      .replaceAll(RegExp(r'official audio', caseSensitive: false), '')
+      .replaceAll(RegExp(r'music video', caseSensitive: false), '')
       .trim();
       
     try {
