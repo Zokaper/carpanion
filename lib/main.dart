@@ -1934,31 +1934,69 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Expanded(
-                child: SegmentedButton<bool>(
-                  segments: const [
-                    ButtonSegment(value: false, label: Text("FAVORITES", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
-                    ButtonSegment(value: true, label: Text("QUEUE", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
-                  ],
-                  selected: {_showQueue},
-                  onSelectionChanged: (Set<bool> newSelection) {
-                    setState(() {
-                      _showQueue = newSelection.first;
-                    });
-                  },
-                  showSelectedIcon: false,
-                  style: ButtonStyle(
-                    visualDensity: VisualDensity.compact,
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                child: Container(
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: Colors.white12,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => setState(() => _showQueue = false),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: !_showQueue ? theme.colorScheme.primary : Colors.transparent,
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Center(
+                              child: Text(
+                                "FAVORITES", 
+                                style: TextStyle(
+                                  color: !_showQueue ? Colors.white : onSurface.withOpacity(0.6), 
+                                  fontSize: 10, 
+                                  fontWeight: FontWeight.bold, 
+                                  letterSpacing: 1.2
+                                )
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () => setState(() => _showQueue = true),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: _showQueue ? theme.colorScheme.primary : Colors.transparent,
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Center(
+                              child: Text(
+                                "QUEUE", 
+                                style: TextStyle(
+                                  color: _showQueue ? Colors.white : onSurface.withOpacity(0.6), 
+                                  fontSize: 10, 
+                                  fontWeight: FontWeight.bold, 
+                                  letterSpacing: 1.2
+                                )
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
               if (!_showQueue)
-                GestureDetector(
-                  onTap: _editFavorites,
-                  child: Padding(
-                    padding: const EdgeInsets.all(4.0),
-                    child: Icon(Icons.edit, color: onSurface.withOpacity(0.5), size: 14),
-                  ),
+                IconButton(
+                  icon: Icon(Icons.edit, size: 16, color: onSurface.withOpacity(0.5)),
+                  onPressed: _editFavorites,
+                  tooltip: 'Edit Favorites',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
                 ),
             ],
           ),

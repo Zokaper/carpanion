@@ -152,105 +152,98 @@ class _QueueTabState extends State<QueueTab> {
 
     return Padding(
       padding: const EdgeInsets.all(8.0),
-      child: SingleChildScrollView(
-        child: Column(
-          children: [
-            const SizedBox(height: 8),
-            if (!ytService.isSignedIn)
-              Padding(
-                padding: const EdgeInsets.only(top: 32.0),
-                child: Center(
-                  child: ElevatedButton.icon(
-                    onPressed: () async {
-                      try {
-                        await ytService.signIn();
-                      } catch (e) {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text("Google Sign-In failed: $e\nEnsure SHA-1 is configured in Google Cloud Console."),
-                              duration: const Duration(seconds: 4),
-                            ),
-                          );
-                        }
+      child: Column(
+        children: [
+          const SizedBox(height: 8),
+          if (!ytService.isSignedIn)
+            Padding(
+              padding: const EdgeInsets.only(top: 32.0),
+              child: Center(
+                child: ElevatedButton.icon(
+                  onPressed: () async {
+                    try {
+                      await ytService.signIn();
+                    } catch (e) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text("Google Sign-In failed: $e\nEnsure SHA-1 is configured in Google Cloud Console."),
+                            duration: const Duration(seconds: 4),
+                          ),
+                        );
                       }
-                    },
-                    icon: const Icon(Icons.login),
-                    label: const Text("Sign in with Google"),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    ),
+                    }
+                  },
+                  icon: const Icon(Icons.login),
+                  label: const Text("Sign in with Google"),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                   ),
                 ),
-              )
-            else ...[
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  IconButton(
-                    icon: Icon(Icons.qr_code, color: _showQrCodeOverlay ? theme.colorScheme.primary : onSurface.withOpacity(0.5)),
-                    onPressed: () => setState(() => _showQrCodeOverlay = !_showQrCodeOverlay),
-                    tooltip: 'Toggle QR Code',
-                  ),
-                  IconButton(
-                    icon: Icon(_allowEditing ? Icons.edit : Icons.edit_off, color: _allowEditing ? theme.colorScheme.primary : onSurface.withOpacity(0.5)),
-                    onPressed: () {
-                      setState(() => _allowEditing = !_allowEditing);
-                      socket?.emit('update_permissions', _allowEditing);
-                    },
-                    tooltip: 'Allow Passenger Editing',
-                  ),
-                ],
               ),
-              const SizedBox(height: 8),
-              if (!_queueStarted || _showQrCodeOverlay) ...[
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: QrImageView(
-                    data: '$backendUrl/?session=$sessionId',
-                    version: QrVersions.auto,
-                    size: 160.0,
-                    backgroundColor: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  "Session: $sessionId",
-                  style: TextStyle(
-                    color: onSurface,
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  "Scan to add songs to the queue",
-                  style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 14),
-                ),
-                const SizedBox(height: 24),
-                if (!_queueStarted)
-                  ElevatedButton.icon(
-                    onPressed: ytService.playlistId != null 
-                        ? () => _playQueue(ytService.playlistId!) 
-                        : null,
-                    icon: const Icon(Icons.play_arrow, size: 28),
-                    label: const Text("START QUEUE", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: theme.colorScheme.primary,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+            )
+          else ...[
+            if (!_queueStarted || _showQrCodeOverlay)
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: QrImageView(
+                        data: '$backendUrl/?session=$sessionId',
+                        version: QrVersions.auto,
+                        size: 140.0,
+                        backgroundColor: Colors.white,
+                      ),
                     ),
-                  ),
-              ],
-              if (_queueStarted && !_showQrCodeOverlay) ...[
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
+                    const SizedBox(height: 16),
+                    Text(
+                      "Session: $sessionId",
+                      style: TextStyle(color: onSurface, fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      "Scan to add songs to the queue",
+                      style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 12),
+                    ),
+                    const SizedBox(height: 24),
+                    if (!_queueStarted)
+                      ElevatedButton.icon(
+                        onPressed: ytService.playlistId != null ? () => _playQueue(ytService.playlistId!) : null,
+                        icon: const Icon(Icons.play_arrow, size: 20),
+                        label: const Text("START QUEUE", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: theme.colorScheme.primary,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                        ),
+                      )
+                    else
+                      ElevatedButton.icon(
+                        onPressed: () => setState(() => _showQrCodeOverlay = false),
+                        icon: const Icon(Icons.arrow_back, size: 20),
+                        label: const Text("BACK TO QUEUE", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white24,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            if (_queueStarted && !_showQrCodeOverlay) ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
                     "NEXT UP",
                     style: TextStyle(
                       color: onSurface.withOpacity(0.6),
@@ -259,57 +252,84 @@ class _QueueTabState extends State<QueueTab> {
                       letterSpacing: 1.5,
                     ),
                   ),
-                ),
-                const SizedBox(height: 12),
-                ...ytService.currentQueue.map((item) {
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 12.0),
-                    child: ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      dense: true,
-                      leading: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: Image.network(
-                          item['thumbnail'] ?? '', 
-                          width: 56, 
-                          height: 56, 
-                          fit: BoxFit.cover, 
-                          errorBuilder: (_, __, ___) => Container(
-                            width: 56, height: 56, color: Colors.grey.withOpacity(0.2), 
-                            child: const Icon(Icons.music_note)
-                          )
-                        ),
+                  Row(
+                    children: [
+                      IconButton(
+                        icon: Icon(Icons.qr_code, color: onSurface.withOpacity(0.5)),
+                        onPressed: () => setState(() => _showQrCodeOverlay = true),
+                        tooltip: 'Show QR Code',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        iconSize: 20,
                       ),
-                      title: Text(
-                        item['title'] ?? 'Unknown', 
-                        maxLines: 1, 
-                        overflow: TextOverflow.ellipsis, 
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: onSurface)
+                      const SizedBox(width: 16),
+                      IconButton(
+                        icon: Icon(_allowEditing ? Icons.edit : Icons.edit_off, color: _allowEditing ? theme.colorScheme.primary : onSurface.withOpacity(0.5)),
+                        onPressed: () {
+                          setState(() => _allowEditing = !_allowEditing);
+                          socket?.emit('update_permissions', _allowEditing);
+                        },
+                        tooltip: 'Allow Passenger Editing',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        iconSize: 20,
                       ),
-                      subtitle: Text(
-                        item['artist'] ?? 'Unknown Artist',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 14, color: onSurface.withOpacity(0.5)),
-                      ),
-                    ),
-                  );
-                }),
-                if (ytService.currentQueue.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.all(32.0),
-                    child: Center(
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: ytService.currentQueue.isEmpty
+                  ? Center(
                       child: Text(
                         "Queue is empty.\nScan the QR code to add songs!",
                         textAlign: TextAlign.center,
                         style: TextStyle(color: onSurface.withOpacity(0.5), fontSize: 16),
                       ),
+                    )
+                  : ListView.builder(
+                      itemCount: ytService.currentQueue.length,
+                      itemBuilder: (context, index) {
+                        final item = ytService.currentQueue[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 12.0),
+                          child: ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            dense: true,
+                            leading: ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.network(
+                                item['thumbnail'] ?? '', 
+                                width: 48, 
+                                height: 48, 
+                                fit: BoxFit.cover, 
+                                errorBuilder: (_, __, ___) => Container(
+                                  width: 48, height: 48, color: Colors.grey.withOpacity(0.2), 
+                                  child: const Icon(Icons.music_note)
+                                )
+                              ),
+                            ),
+                            title: Text(
+                              item['title'] ?? 'Unknown', 
+                              maxLines: 1, 
+                              overflow: TextOverflow.ellipsis, 
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: onSurface)
+                            ),
+                            subtitle: Text(
+                              item['artist'] ?? 'Unknown Artist',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(fontSize: 13, color: onSurface.withOpacity(0.5)),
+                            ),
+                          ),
+                        );
+                      },
                     ),
-                  )
-              ],
+              ),
             ]
           ],
-        ),
+        ],
       ),
     );
   }
