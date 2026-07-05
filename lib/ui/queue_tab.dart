@@ -265,9 +265,16 @@ class _QueueTabState extends State<QueueTab> {
 
   void _playQueueAt(String videoId, int index) {
     _currentPlayingIndex = index;
+    final item = (index >= 0 && index < _ytService.currentQueue.length) 
+        ? _ytService.currentQueue[index] 
+        : null;
+    final query = item != null ? '${item['title']} ${item['artist']}' : videoId;
+
     final intent = AndroidIntent(
-      action: 'action_view',
-      data: 'https://music.youtube.com/watch?v=$videoId',
+      action: 'android.media.action.MEDIA_PLAY_FROM_SEARCH',
+      arguments: <String, dynamic>{
+        'query': query,
+      },
       package: 'com.google.android.apps.youtube.music',
     );
     intent.launch().catchError((e) {
