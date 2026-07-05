@@ -237,10 +237,16 @@ if (currentSession && typeof io !== 'undefined') {
     } else {
       socket.emit('passenger_add_song', videoId);
     }
-    document.getElementById('searchResults').classList.add('hidden');
+    clearTimeout(searchTimeout);
+    const searchResultsBox = document.getElementById('searchResults');
+    searchResultsBox.innerHTML = '';
+    searchResultsBox.classList.add('hidden');
     searchInput.value = '';
     document.getElementById('status').innerText = 'Adding to queue...';
     document.getElementById('status').className = 'success';
-    setTimeout(() => { document.getElementById('status').innerText = ''; }, 3000);
+    setTimeout(() => {
+      document.getElementById('status').innerText = '';
+      document.getElementById('status').className = '';
+    }, 3000);
   };
 }
