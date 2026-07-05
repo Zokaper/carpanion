@@ -84,6 +84,14 @@ if (currentSession && typeof io !== 'undefined') {
     renderQueue();
   });
 
+  socket.on('media_permissions_updated', (canControlMedia) => {
+    if (canControlMedia) {
+      mediaControls.classList.remove('hidden');
+    } else {
+      mediaControls.classList.add('hidden');
+    }
+  });
+
   function renderQueue() {
     const list = document.getElementById('queueList');
     list.innerHTML = '';
@@ -143,6 +151,14 @@ if (currentSession && typeof io !== 'undefined') {
   let searchTimeout;
   const searchInput = document.getElementById('searchInput');
   const searchModeToggle = document.getElementById('searchMode');
+  const mediaControls = document.getElementById('mediaControls');
+  const btnPrev = document.getElementById('btnPrev');
+  const btnPlayPause = document.getElementById('btnPlayPause');
+  const btnNext = document.getElementById('btnNext');
+
+  btnPrev.addEventListener('click', () => socket.emit('passenger_media_action', 'previous'));
+  btnPlayPause.addEventListener('click', () => socket.emit('passenger_media_action', 'playPause'));
+  btnNext.addEventListener('click', () => socket.emit('passenger_media_action', 'next'));
 
   searchInput.addEventListener('input', (e) => {
     const query = e.target.value;

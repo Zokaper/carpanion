@@ -49,13 +49,6 @@ class YouTubeService extends ChangeNotifier {
       final url = Uri.parse('https://itunes.apple.com/search?term=$searchTerm&entity=song&limit=1');
       var res = await http.get(url).timeout(const Duration(seconds: 3));
       var data = jsonDecode(res.body);
-      
-      if (data['results'] == null || data['results'].isEmpty) {
-        // Fallback to just the title if the channel name messed up the search
-        final fallbackUrl = Uri.parse('https://itunes.apple.com/search?term=${Uri.encodeComponent(cleanTitle)}&entity=song&limit=1');
-        res = await http.get(fallbackUrl).timeout(const Duration(seconds: 3));
-        data = jsonDecode(res.body);
-      }
 
       if (data['results'] != null && data['results'].isNotEmpty) {
         final trackName = data['results'][0]['trackName']?.toString() ?? cleanTitle;
@@ -204,6 +197,26 @@ class YouTubeService extends ChangeNotifier {
     } finally {
       _isAdding = false;
     }
+  }
+
+  Future<void> clearPlaylist() async {
+    if (_youtubeApi == null || _playlistId == null) return;
+    
+    // Create a copy of current items to avoid concurrent modification issues
+    final itemsToDelete = List<Map<String, dynamic>>.from(currentQueue);
+    
+    for (var item in itemsToDelete) {
+      try {
+        await _withAuthRetry(() async {
+          await _youtubeApi!.playlistItems.delete(item['id']);
+        });
+        // Throttle deletes to avoid rate limiting
+        await Future.delayed(const Duration(milliseconds: 150));
+      } catch (e) {
+        debugPrint("Error deleting item ${item['id']}: $e");
+      }
+    }
+    await fetchQueue();
   }
 
   Future<void> fetchQueue() async {

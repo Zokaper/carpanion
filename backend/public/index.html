@@ -125,6 +125,40 @@
     ul { list-style: none; padding: 0; margin: 0; }
     .controls { display: flex; gap: 4px; }
     .controls button { padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+    .media-controls {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: rgba(30, 30, 40, 0.95);
+      backdrop-filter: blur(10px);
+      padding: 16px;
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      z-index: 2000;
+      box-shadow: 0 -4px 20px rgba(0,0,0,0.5);
+      transition: transform 0.3s ease;
+    }
+    .media-controls.hidden {
+      transform: translateY(100%);
+      display: flex !important; /* Keep it flex to allow transform animation */
+    }
+    .media-btn {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 50%;
+      width: 56px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      color: white;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    .media-btn:active { background: rgba(255, 255, 255, 0.2); transform: scale(0.95); }
+    body { padding-bottom: 90px; } /* Space for media controls */
   </style>
 </head>
 <body>
@@ -148,6 +182,12 @@
   <ul id="queueList"></ul>
 
   <center><button id="installBtn" style="display: none; margin-top: 40px;">Install App to Share from Spotify</button></center>
+
+  <div id="mediaControls" class="media-controls hidden">
+    <button class="media-btn" id="btnPrev">⏮️</button>
+    <button class="media-btn" id="btnPlayPause">⏯️</button>
+    <button class="media-btn" id="btnNext">⏭️</button>
+  </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="app.js"></script>

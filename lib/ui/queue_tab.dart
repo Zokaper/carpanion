@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:android_intent_plus/android_intent.dart';
+import 'package:flutter_media_controller/flutter_media_controller.dart';
 import '../services/youtube_service.dart';
 import '../main.dart';
 
@@ -25,6 +26,7 @@ class _QueueTabState extends State<QueueTab> {
   bool _queueStarted = false;
   bool _showQrCodeOverlay = false;
   bool _allowEditing = false;
+  bool _allowMediaControl = false;
   late YouTubeService _ytService;
   late DashboardProvider _dashboard;
   Timer? _pollTimer;
@@ -128,6 +130,23 @@ class _QueueTabState extends State<QueueTab> {
 
     socket!.on('request_permissions', (_) {
       socket!.emit('update_permissions', _allowEditing);
+      socket!.emit('update_media_permissions', _allowMediaControl);
+    });
+
+    socket!.on('passenger_media_action', (action) async {
+      if (_allowMediaControl) {
+        try {
+          if (action == 'playPause') {
+            await FlutterMediaController.togglePlayPause();
+          } else if (action == 'next') {
+            await FlutterMediaController.nextTrack();
+          } else if (action == 'previous') {
+            await FlutterMediaController.previousTrack();
+          }
+        } catch (e) {
+          debugPrint("Media action error: $e");
+        }
+      }
     });
 
     socket!.on('passenger_search_and_add_song', (query) async {
@@ -326,6 +345,48 @@ class _QueueTabState extends State<QueueTab> {
                         constraints: const BoxConstraints(),
                         iconSize: 20,
                       ),
+                      const SizedBox(width: 16),
+                      IconButton(
+                        icon: Icon(_allowMediaControl ? Icons.play_circle_outline : Icons.not_interested, color: _allowMediaControl ? theme.colorScheme.primary : onSurface.withOpacity(0.5)),
+                        onPressed: () {
+                          setState(() => _allowMediaControl = !_allowMediaControl);
+                          socket?.emit('update_media_permissions', _allowMediaControl);
+                        },
+                        tooltip: 'Allow Media Control',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        iconSize: 20,
+                      ),
+                      if (ytService.currentQueue.isNotEmpty) ...[
+                        const SizedBox(width: 16),
+                        IconButton(
+                          icon: const Icon(Icons.delete_sweep, color: Colors.redAccent),
+                          onPressed: () {
+                            showDialog(
+                              context: context,
+                              builder: (context) => AlertDialog(
+                                backgroundColor: const Color(0xFF151525),
+                                title: const Text('Clear Queue?', style: TextStyle(color: Colors.white)),
+                                content: const Text('This will permanently delete all songs from the Collab playlist.', style: TextStyle(color: Colors.white70)),
+                                actions: [
+                                  TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
+                                  TextButton(
+                                    onPressed: () {
+                                      Navigator.pop(context);
+                                      ytService.clearPlaylist();
+                                    },
+                                    child: const Text('CLEAR', style: TextStyle(color: Colors.redAccent)),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                          tooltip: 'Clear Queue',
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          iconSize: 20,
+                        ),
+                      ],
                     ],
                   ),
                 ],
@@ -349,15 +410,18 @@ class _QueueTabState extends State<QueueTab> {
                             }
                             return false;
                           },
-                          child: ListView.builder(
-                            controller: _scrollController,
-                            itemCount: ytService.currentQueue.length,
-                            itemBuilder: (context, index) {
-                              final item = ytService.currentQueue[index];
-                              final isPlaying = item['title'] == _lastTrack;
-                              
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: 8.0),
+                          child: Builder(
+                            builder: (context) {
+                              int playingIndex = ytService.currentQueue.indexWhere((item) => item['title'] == _lastTrack);
+                              return ListView.builder(
+                                controller: _scrollController,
+                                itemCount: ytService.currentQueue.length,
+                                itemBuilder: (context, index) {
+                                  final item = ytService.currentQueue[index];
+                                  final isPlaying = index == playingIndex;
+                                  
+                                  return Padding(
+                                    padding: const EdgeInsets.only(bottom: 8.0),
                                 child: Container(
                                   decoration: isPlaying ? BoxDecoration(
                                     color: theme.colorScheme.primary.withOpacity(0.15),
@@ -397,9 +461,10 @@ class _QueueTabState extends State<QueueTab> {
                                 ),
                               );
                             },
-                          ),
-                        ),
-                        if (_userScrolled)
+                          );
+                        }),
+                      ),
+                      if (_userScrolled)
                           Positioned(
                             bottom: 16,
                             right: 8,

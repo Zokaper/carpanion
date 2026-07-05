@@ -76,9 +76,17 @@ io.on('connection', (socket) => {
 
   socket.on('passenger_reorder_song', (data) => {
     const sessionId = socket.data.sessionId;
-    const carSocketId = activeSessions.get(sessionId);
-    if (carSocketId) {
-      io.to(carSocketId).emit('passenger_reorder_song', data);
+    if (sessionId) {
+      const carSocketId = activeSessions.get(sessionId);
+      if (carSocketId) io.to(carSocketId).emit('passenger_reorder_song', data);
+    }
+  });
+
+  socket.on('passenger_media_action', (action) => {
+    const sessionId = socket.data.sessionId;
+    if (sessionId) {
+      const carSocketId = activeSessions.get(sessionId);
+      if (carSocketId) io.to(carSocketId).emit('passenger_media_action', action);
     }
   });
 
@@ -131,6 +139,15 @@ io.on('connection', (socket) => {
     for (const [sessionId, sockId] of activeSessions.entries()) {
       if (sockId === socket.id) {
         io.to(sessionId).emit('permissions_updated', canEdit);
+        break;
+      }
+    }
+  });
+
+  socket.on('update_media_permissions', (canControlMedia) => {
+    for (const [sessionId, sockId] of activeSessions.entries()) {
+      if (sockId === socket.id) {
+        io.to(sessionId).emit('media_permissions_updated', canControlMedia);
         break;
       }
     }
