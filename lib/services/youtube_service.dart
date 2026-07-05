@@ -176,7 +176,7 @@ class YouTubeService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> reorderSong(String playlistItemId, String videoId, int newPosition) async {
+  Future<void> reorderSong(String playlistItemId, int newPosition) async {
     final index = currentQueue.indexWhere((item) => item['id'] == playlistItemId);
     if (index != -1) {
       final item = currentQueue.removeAt(index);
