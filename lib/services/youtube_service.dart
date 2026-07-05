@@ -39,13 +39,24 @@ class YouTubeService extends ChangeNotifier {
       .replaceAll(RegExp(r'music video', caseSensitive: false), '')
       .trim();
       
-    String cleanChannel = youtubeChannel.replaceAll(' - Topic', '').trim();
+    String cleanChannel = youtubeChannel
+      .replaceAll(RegExp(r' - Topic', caseSensitive: false), '')
+      .replaceAll(RegExp(r'VEVO', caseSensitive: false), '')
+      .trim();
       
     try {
       final searchTerm = Uri.encodeComponent('$cleanTitle $cleanChannel');
       final url = Uri.parse('https://itunes.apple.com/search?term=$searchTerm&entity=song&limit=1');
-      final res = await http.get(url).timeout(const Duration(seconds: 3));
-      final data = jsonDecode(res.body);
+      var res = await http.get(url).timeout(const Duration(seconds: 3));
+      var data = jsonDecode(res.body);
+      
+      if (data['results'] == null || data['results'].isEmpty) {
+        // Fallback to just the title if the channel name messed up the search
+        final fallbackUrl = Uri.parse('https://itunes.apple.com/search?term=${Uri.encodeComponent(cleanTitle)}&entity=song&limit=1');
+        res = await http.get(fallbackUrl).timeout(const Duration(seconds: 3));
+        data = jsonDecode(res.body);
+      }
+
       if (data['results'] != null && data['results'].isNotEmpty) {
         final trackName = data['results'][0]['trackName']?.toString() ?? cleanTitle;
         final artistName = data['results'][0]['artistName']?.toString() ?? 'Unknown Artist';
