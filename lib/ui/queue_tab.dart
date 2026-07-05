@@ -189,29 +189,29 @@ class _QueueTabState extends State<QueueTab> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Container(
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
                         color: Colors.white,
-                        borderRadius: BorderRadius.circular(16),
+                        borderRadius: BorderRadius.circular(12),
                       ),
                       child: QrImageView(
                         data: '$backendUrl/?session=$sessionId',
                         version: QrVersions.auto,
-                        size: 140.0,
+                        size: 100.0,
                         backgroundColor: Colors.white,
                       ),
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 8),
                     Text(
                       "Session: $sessionId",
-                      style: TextStyle(color: onSurface, fontSize: 18, fontWeight: FontWeight.bold),
+                      style: TextStyle(color: onSurface, fontSize: 16, fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 4),
                     Text(
                       "Scan to add songs to the queue",
-                      style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 12),
+                      style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 11),
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 16),
                     if (!_queueStarted)
                       ElevatedButton.icon(
                         onPressed: ytService.playlistId != null ? () => _playQueue(ytService.playlistId!) : null,
