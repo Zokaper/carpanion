@@ -11,18 +11,22 @@ const sessionParam = urlParams.get('session');
 const errorParam = urlParams.get('error');
 const successParam = urlParams.get('success');
 
+let currentSession = null;
+
 if (sessionParam) {
-  // Store session in cookie for share_target POST request
   document.cookie = `session=${sessionParam}; path=/; max-age=86400`;
-  document.getElementById('message').innerText = `Connected to car session: ${sessionParam}`;
+  currentSession = sessionParam;
 } else {
-  // Check if session exists in cookie
   const match = document.cookie.match(new RegExp('(^| )session=([^;]+)'));
   if (match) {
-    document.getElementById('message').innerText = `Connected to car session: ${match[2]}`;
-  } else {
-    document.getElementById('message').innerText = 'No session found. Please scan the QR code in the Carpanion app.';
+    currentSession = match[2];
   }
+}
+
+if (currentSession) {
+  document.getElementById('message').innerText = `Session: ${currentSession}`;
+} else {
+  document.getElementById('message').innerText = 'No session found. Please scan the QR code in the Carpanion app.';
 }
 
 if (errorParam) {
@@ -45,10 +49,105 @@ window.addEventListener('beforeinstallprompt', (e) => {
     installBtn.style.display = 'none';
     deferredPrompt.prompt();
     deferredPrompt.userChoice.then((choiceResult) => {
-      if (choiceResult.outcome === 'accepted') {
-        console.log('User accepted the A2HS prompt');
-      }
       deferredPrompt = null;
     });
   });
 });
+
+// --- WebSockets & App Logic ---
+if (currentSession && typeof io !== 'undefined') {
+  const socket = io();
+  let canEdit = false;
+  let currentQueueState = [];
+
+  socket.on('connect', () => {
+    socket.emit('join_passenger', currentSession);
+  });
+
+  socket.on('queue_updated', (queue) => {
+    currentQueueState = queue;
+    renderQueue();
+  });
+
+  socket.on('permissions_updated', (allowEditing) => {
+    canEdit = allowEditing;
+    renderQueue();
+  });
+
+  function renderQueue() {
+    const list = document.getElementById('queueList');
+    list.innerHTML = '';
+    currentQueueState.forEach((item, index) => {
+      const li = document.createElement('li');
+      li.className = 'queue-item';
+      li.innerHTML = `
+        <img src="${item.thumbnail}" alt="thumb">
+        <div class="info">
+          <div class="title">${item.title}</div>
+        </div>
+        ${canEdit ? `
+          <div class="controls">
+            ${index > 0 ? `<button onclick="reorder('${item.id}', '${item.videoId}', ${item.position - 1})">⬆️</button>` : ''}
+            ${index < currentQueueState.length - 1 ? `<button onclick="reorder('${item.id}', '${item.videoId}', ${item.position + 1})">⬇️</button>` : ''}
+            <button onclick="deleteSong('${item.id}')" style="background: #ff5252">❌</button>
+          </div>
+        ` : ''}
+      `;
+      list.appendChild(li);
+    });
+  }
+
+  window.deleteSong = (playlistItemId) => {
+    socket.emit('passenger_delete_song', playlistItemId);
+  };
+
+  window.reorder = (playlistItemId, videoId, newPosition) => {
+    socket.emit('passenger_reorder_song', { playlistItemId, videoId, newPosition });
+  };
+
+  // Search Logic
+  let searchTimeout;
+  document.getElementById('searchInput').addEventListener('input', (e) => {
+    const query = e.target.value;
+    if (!query) {
+      document.getElementById('searchResults').classList.add('hidden');
+      return;
+    }
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+      socket.emit('request_search', query);
+    }, 500);
+  });
+
+  socket.on('search_results', (results) => {
+    const container = document.getElementById('searchResults');
+    container.innerHTML = '';
+    if (results.length === 0) {
+      container.innerHTML = '<div class="result-item" style="padding: 16px;">No results</div>';
+    } else {
+      results.forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'result-item';
+        div.innerHTML = `
+          <img src="${item.thumbnail}">
+          <div class="info">
+            <div class="title">${item.title}</div>
+            <div class="channel">${item.channel}</div>
+          </div>
+          <button onclick="addSong('${item.videoId}')">Add</button>
+        `;
+        container.appendChild(div);
+      });
+    }
+    container.classList.remove('hidden');
+  });
+
+  window.addSong = (videoId) => {
+    socket.emit('passenger_add_song', videoId);
+    document.getElementById('searchResults').classList.add('hidden');
+    document.getElementById('searchInput').value = '';
+    document.getElementById('status').innerText = 'Song added via Search!';
+    document.getElementById('status').className = 'success';
+    setTimeout(() => { document.getElementById('status').innerText = ''; }, 3000);
+  };
+}

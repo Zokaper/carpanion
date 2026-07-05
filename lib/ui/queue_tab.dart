@@ -18,12 +18,23 @@ class _QueueTabState extends State<QueueTab> {
   late String sessionId;
   IO.Socket? socket;
   final List<String> _recentlyAdded = [];
+  bool _showQrCode = true;
+  bool _allowEditing = false;
+  late YouTubeService _ytService;
 
   @override
   void initState() {
     super.initState();
     sessionId = _generateSessionId();
+    _ytService = Provider.of<YouTubeService>(context, listen: false);
+    _ytService.addListener(_onYouTubeServiceUpdate);
     _connectSocket();
+  }
+
+  void _onYouTubeServiceUpdate() {
+    if (socket?.connected == true) {
+      socket!.emit('update_queue', _ytService.currentQueue);
+    }
   }
 
   String _generateSessionId() {
@@ -48,10 +59,9 @@ class _QueueTabState extends State<QueueTab> {
 
     socket!.on('add_song', (data) async {
       debugPrint("Received add_song event: $data");
-      final ytService = Provider.of<YouTubeService>(context, listen: false);
       if (data['videoId'] != null) {
         final title = data['title'] ?? 'Unknown Song';
-        final success = await ytService.addVideoToPlaylist(data['videoId']);
+        final success = await _ytService.addVideoToPlaylist(data['videoId']);
         if (success && mounted) {
           setState(() {
             _recentlyAdded.insert(0, title);
@@ -64,12 +74,43 @@ class _QueueTabState extends State<QueueTab> {
       }
     });
 
+    socket!.on('request_queue', (_) {
+      socket!.emit('update_queue', _ytService.currentQueue);
+    });
+
+    socket!.on('request_permissions', (_) {
+      socket!.emit('update_permissions', _allowEditing);
+    });
+
+    socket!.on('request_search', (data) async {
+      final passengerId = data['passengerId'];
+      final query = data['query'];
+      final results = await _ytService.searchSongs(query);
+      socket!.emit('search_results', {
+        'passengerId': passengerId,
+        'results': results,
+      });
+    });
+
+    socket!.on('passenger_delete_song', (playlistItemId) async {
+      if (_allowEditing) {
+        await _ytService.deleteSong(playlistItemId);
+      }
+    });
+
+    socket!.on('passenger_reorder_song', (data) async {
+      if (_allowEditing) {
+        await _ytService.reorderSong(data['playlistItemId'], data['videoId'], data['newPosition']);
+      }
+    });
+
     socket!.onDisconnect((_) => debugPrint('Disconnected from backend'));
   }
 
   @override
   void dispose() {
     socket?.disconnect();
+    _ytService.removeListener(_onYouTubeServiceUpdate);
     super.dispose();
   }
 
@@ -124,33 +165,86 @@ class _QueueTabState extends State<QueueTab> {
                 ),
               )
             else ...[
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: QrImageView(
-                  data: '$backendUrl/?session=$sessionId',
-                  version: QrVersions.auto,
-                  size: 120.0,
-                  backgroundColor: Colors.white,
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      Switch(
+                        value: _showQrCode,
+                        onChanged: (val) => setState(() => _showQrCode = val),
+                        activeColor: theme.colorScheme.primary,
+                      ),
+                      Text("Show QR", style: TextStyle(fontSize: 10)),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      Switch(
+                        value: _allowEditing,
+                        onChanged: (val) {
+                          setState(() => _allowEditing = val);
+                          socket?.emit('update_permissions', val);
+                        },
+                        activeColor: theme.colorScheme.primary,
+                      ),
+                      Text("Allow Edit", style: TextStyle(fontSize: 10)),
+                    ],
+                  ),
+                ],
               ),
-              const SizedBox(height: 12),
-              Text(
-                "Session: $sessionId",
-                style: TextStyle(
-                  color: onSurface,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
+              const SizedBox(height: 8),
+              if (_showQrCode) ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: QrImageView(
+                    data: '$backendUrl/?session=$sessionId',
+                    version: QrVersions.auto,
+                    size: 120.0,
+                    backgroundColor: Colors.white,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                "Scan to add songs to the queue",
-                style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 12),
-              ),
+                const SizedBox(height: 12),
+                Text(
+                  "Session: $sessionId",
+                  style: TextStyle(
+                    color: onSurface,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  "Scan to add songs to the queue",
+                  style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 12),
+                ),
+              ] else ...[
+                Text(
+                  "NEXT UP",
+                  style: TextStyle(
+                    color: onSurface.withOpacity(0.6),
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ...ytService.currentQueue.map((item) {
+                  return ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    leading: ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: Image.network(item['thumbnail'] ?? '', width: 40, height: 40, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Icon(Icons.music_note)),
+                    ),
+                    title: Text(item['title'] ?? 'Unknown', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12)),
+                  );
+                }),
+              ],
               const SizedBox(height: 16),
               if (_recentlyAdded.isNotEmpty) ...[
                 Text(

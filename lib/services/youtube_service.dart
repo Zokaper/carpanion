@@ -19,6 +19,8 @@ class YouTubeService extends ChangeNotifier {
   GoogleSignInAccount? get currentUser => _currentUser;
   bool get isSignedIn => _currentUser != null;
   String? get playlistId => _playlistId;
+  
+  List<Map<String, dynamic>> currentQueue = [];
 
   YouTubeService() {
     _googleSignIn.onCurrentUserChanged.listen((GoogleSignInAccount? account) async {
@@ -29,6 +31,7 @@ class YouTubeService extends ChangeNotifier {
         if (authClient != null) {
           _youtubeApi = youtube.YouTubeApi(authClient);
           await _ensurePlaylistExists();
+          await fetchQueue();
         }
       }
       notifyListeners();
@@ -97,10 +100,87 @@ class YouTubeService extends ChangeNotifier {
             ..videoId = videoId));
             
       await _youtubeApi!.playlistItems.insert(item, ['snippet']);
+      await fetchQueue();
       return true;
     } catch (e) {
       debugPrint("Error adding video to playlist: $e");
       return false;
+    }
+  }
+
+  Future<void> fetchQueue() async {
+    if (_youtubeApi == null || _playlistId == null) return;
+    try {
+      final items = await _youtubeApi!.playlistItems.list(
+        ['snippet', 'contentDetails'], 
+        playlistId: _playlistId, 
+        maxResults: 50
+      );
+      
+      currentQueue = items.items?.map((item) {
+        return {
+          'id': item.id ?? '',
+          'videoId': item.snippet?.resourceId?.videoId ?? '',
+          'title': item.snippet?.title ?? 'Unknown',
+          'thumbnail': item.snippet?.thumbnails?.default_?.url ?? '',
+          'position': item.snippet?.position ?? 0,
+        };
+      }).toList() ?? [];
+      
+      currentQueue.sort((a, b) => (a['position'] as int).compareTo(b['position'] as int));
+      notifyListeners();
+    } catch (e) {
+      debugPrint("Error fetching queue: $e");
+    }
+  }
+
+  Future<void> deleteSong(String playlistItemId) async {
+    if (_youtubeApi == null) return;
+    try {
+      await _youtubeApi!.playlistItems.delete(playlistItemId);
+      await fetchQueue();
+    } catch (e) {
+      debugPrint("Error deleting song: $e");
+    }
+  }
+
+  Future<void> reorderSong(String playlistItemId, String videoId, int newPosition) async {
+    if (_youtubeApi == null || _playlistId == null) return;
+    try {
+      final item = youtube.PlaylistItem()
+        ..id = playlistItemId
+        ..snippet = (youtube.PlaylistItemSnippet()
+          ..playlistId = _playlistId
+          ..resourceId = (youtube.ResourceId()..kind = 'youtube#video'..videoId = videoId)
+          ..position = newPosition);
+      await _youtubeApi!.playlistItems.update(item, ['snippet']);
+      await fetchQueue();
+    } catch (e) {
+      debugPrint("Error reordering song: $e");
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> searchSongs(String query) async {
+    if (_youtubeApi == null) return [];
+    try {
+      final res = await _youtubeApi!.search.list(
+        ['snippet'], 
+        q: query, 
+        type: ['video'], 
+        videoCategoryId: '10',
+        maxResults: 10
+      );
+      return res.items?.map((item) {
+        return {
+          'videoId': item.id?.videoId ?? '',
+          'title': item.snippet?.title ?? 'Unknown',
+          'thumbnail': item.snippet?.thumbnails?.default_?.url ?? '',
+          'channel': item.snippet?.channelTitle ?? '',
+        };
+      }).toList() ?? [];
+    } catch (e) {
+      debugPrint("Error searching songs: $e");
+      return [];
     }
   }
 }

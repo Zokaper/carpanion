@@ -10,24 +10,20 @@
       background-color: #121212;
       color: #ffffff;
       font-family: 'Inter', sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
       margin: 0;
-      text-align: center;
       padding: 20px;
       box-sizing: border-box;
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
     }
-    h1 { margin-bottom: 10px; }
-    p { color: #aaaaaa; }
-    #status { margin-top: 20px; font-weight: bold; }
+    h1 { text-align: center; margin-bottom: 5px; }
+    #message { text-align: center; color: #aaaaaa; margin-top: 0; }
+    #status { text-align: center; margin-top: 10px; font-weight: bold; }
     .success { color: #1DB954; }
     .error { color: #ff5252; }
     button {
-      margin-top: 20px;
-      padding: 10px 20px;
+      padding: 8px 16px;
       background-color: #1DB954;
       color: #000;
       border: none;
@@ -35,14 +31,72 @@
       font-weight: bold;
       cursor: pointer;
     }
+    .search-container {
+      position: relative;
+      margin-top: 20px;
+    }
+    #searchInput {
+      width: 100%;
+      padding: 12px 16px;
+      border-radius: 24px;
+      border: none;
+      background-color: #282828;
+      color: white;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+    #searchResults {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      background-color: #282828;
+      border-radius: 8px;
+      margin-top: 4px;
+      max-height: 300px;
+      overflow-y: auto;
+      z-index: 1000;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+    .hidden { display: none !important; }
+    .result-item, .queue-item {
+      display: flex;
+      align-items: center;
+      padding: 12px;
+      border-bottom: 1px solid #333;
+    }
+    .result-item:last-child, .queue-item:last-child { border-bottom: none; }
+    .result-item img, .queue-item img {
+      width: 48px;
+      height: 48px;
+      border-radius: 4px;
+      object-fit: cover;
+      margin-right: 12px;
+    }
+    .info { flex: 1; overflow: hidden; }
+    .title { font-weight: bold; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .channel { color: #aaa; font-size: 12px; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    .controls { display: flex; gap: 4px; }
+    .controls button { padding: 4px 8px; border-radius: 4px; font-size: 12px; }
   </style>
 </head>
 <body>
   <h1>Carpanion Queue</h1>
   <p id="message">Loading session...</p>
   <div id="status"></div>
-  <button id="installBtn" style="display: none;">Install App</button>
+  
+  <div class="search-container">
+    <input type="text" id="searchInput" placeholder="Search and add a song..." autocomplete="off">
+    <div id="searchResults" class="hidden"></div>
+  </div>
 
+  <h2 style="margin-top: 30px; border-bottom: 1px solid #333; padding-bottom: 8px;">Next Up</h2>
+  <ul id="queueList"></ul>
+
+  <center><button id="installBtn" style="display: none; margin-top: 40px;">Install App to Share from Spotify</button></center>
+
+  <script src="/socket.io/socket.io.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

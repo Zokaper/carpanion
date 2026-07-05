@@ -43,6 +43,80 @@ io.on('connection', (socket) => {
       }
     }
   });
+
+  // --- Passenger Events ---
+  socket.on('join_passenger', (sessionId) => {
+    console.log(`Passenger ${socket.id} joined session ${sessionId}`);
+    socket.join(sessionId);
+    socket.data.sessionId = sessionId;
+    
+    // Request latest queue and permissions from the car
+    const carSocketId = activeSessions.get(sessionId);
+    if (carSocketId) {
+      io.to(carSocketId).emit('request_queue');
+      io.to(carSocketId).emit('request_permissions');
+    }
+  });
+
+  socket.on('request_search', (query) => {
+    const sessionId = socket.data.sessionId;
+    const carSocketId = activeSessions.get(sessionId);
+    if (carSocketId) {
+      io.to(carSocketId).emit('request_search', { passengerId: socket.id, query });
+    }
+  });
+
+  socket.on('passenger_delete_song', (playlistItemId) => {
+    const sessionId = socket.data.sessionId;
+    const carSocketId = activeSessions.get(sessionId);
+    if (carSocketId) {
+      io.to(carSocketId).emit('passenger_delete_song', playlistItemId);
+    }
+  });
+
+  socket.on('passenger_reorder_song', (data) => {
+    const sessionId = socket.data.sessionId;
+    const carSocketId = activeSessions.get(sessionId);
+    if (carSocketId) {
+      io.to(carSocketId).emit('passenger_reorder_song', data);
+    }
+  });
+
+  socket.on('passenger_add_song', (videoId) => {
+    const sessionId = socket.data.sessionId;
+    const carSocketId = activeSessions.get(sessionId);
+    if (carSocketId) {
+      // Re-use existing add_song event
+      io.to(carSocketId).emit('add_song', { videoId, title: '' });
+    }
+  });
+
+  // --- Carpanion Events ---
+  socket.on('search_results', (data) => {
+    // data: { passengerId, results }
+    if (data.passengerId) {
+      io.to(data.passengerId).emit('search_results', data.results);
+    }
+  });
+
+  socket.on('update_queue', (queue) => {
+    // Find sessionId for this car
+    for (const [sessionId, sockId] of activeSessions.entries()) {
+      if (sockId === socket.id) {
+        io.to(sessionId).emit('queue_updated', queue);
+        break;
+      }
+    }
+  });
+
+  socket.on('update_permissions', (canEdit) => {
+    for (const [sessionId, sockId] of activeSessions.entries()) {
+      if (sockId === socket.id) {
+        io.to(sessionId).emit('permissions_updated', canEdit);
+        break;
+      }
+    }
+  });
 });
 
 // Endpoint for PWA Share Target
