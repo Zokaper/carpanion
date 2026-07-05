@@ -23,6 +23,7 @@ class _QueueTabState extends State<QueueTab> {
   bool _showQrCodeOverlay = false;
   bool _allowEditing = false;
   late YouTubeService _ytService;
+  Timer? _pollTimer;
 
   @override
   void initState() {
@@ -31,6 +32,12 @@ class _QueueTabState extends State<QueueTab> {
     _ytService = Provider.of<YouTubeService>(context, listen: false);
     _ytService.addListener(_onYouTubeServiceUpdate);
     _connectSocket();
+    
+    // Initial fetch and start polling every 10 seconds to catch external edits
+    _ytService.fetchQueue();
+    _pollTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (mounted) _ytService.fetchQueue();
+    });
   }
 
   void _onYouTubeServiceUpdate() {
@@ -125,6 +132,7 @@ class _QueueTabState extends State<QueueTab> {
 
   @override
   void dispose() {
+    _pollTimer?.cancel();
     socket?.disconnect();
     _ytService.removeListener(_onYouTubeServiceUpdate);
     super.dispose();

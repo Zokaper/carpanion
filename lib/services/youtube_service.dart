@@ -118,21 +118,31 @@ class YouTubeService extends ChangeNotifier {
     if (_youtubeApi == null) return;
     try {
       await _withAuthRetry(() async {
-      // Check if "Carpanion Queue" exists
-      final playlists = await _youtubeApi!.playlists.list(
-        ['snippet', 'id'],
-        mine: true,
-        maxResults: 50,
-      );
+        String? nextPageToken;
+        youtube.Playlist? existing;
+        
+        do {
+          final playlists = await _youtubeApi!.playlists.list(
+            ['snippet', 'id'],
+            mine: true,
+            maxResults: 50,
+            pageToken: nextPageToken,
+          );
 
-      final existing = playlists.items?.firstWhere(
-        (p) => p.snippet?.title == 'Carpanion Queue',
-        orElse: () => youtube.Playlist(),
-      );
+          existing = playlists.items?.firstWhere(
+            (p) => p.snippet?.title == 'Carpanion Queue',
+            orElse: () => youtube.Playlist(),
+          );
 
-      if (existing != null && existing.id != null) {
-        _playlistId = existing.id;
-      } else {
+          if (existing != null && existing.id != null) {
+            break;
+          }
+          nextPageToken = playlists.nextPageToken;
+        } while (nextPageToken != null);
+
+        if (existing != null && existing.id != null) {
+          _playlistId = existing.id;
+        } else {
         // Create new playlist
         final newPlaylist = youtube.Playlist()
           ..snippet = (youtube.PlaylistSnippet()
@@ -261,7 +271,6 @@ class YouTubeService extends ChangeNotifier {
           ['snippet'], 
           q: query, 
           type: ['video'], 
-          videoCategoryId: '10',
           maxResults: 10
         );
         return res.items?.map((item) {
