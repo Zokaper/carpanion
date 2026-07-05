@@ -5,6 +5,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:android_intent_plus/android_intent.dart';
 import '../services/youtube_service.dart';
+import '../main.dart';
 
 class QueueTab extends StatefulWidget {
   const QueueTab({super.key});
@@ -142,6 +143,9 @@ class _QueueTabState extends State<QueueTab> {
     intent.launch().catchError((e) {
       debugPrint("Could not launch YT Music intent: $e");
     });
+    if (mounted) {
+      Provider.of<DashboardProvider>(context, listen: false).setWaitingForMusic();
+    }
   }
 
   @override

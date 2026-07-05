@@ -774,9 +774,6 @@ class DashboardProvider with ChangeNotifier {
               
               if (!_isPlaying && isCurrentlyPlaying) {
                  // Music started playing
-                 if (!_userManuallySwitchedTab) {
-                    _selectedSidebarTab = 1; // Switch to phone tab automatically
-                 }
               }
               _isPlaying = isCurrentlyPlaying;
               notifyListeners();
