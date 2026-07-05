@@ -14,7 +14,7 @@ class QueueTab extends StatefulWidget {
 }
 
 class _QueueTabState extends State<QueueTab> {
-  final String backendUrl = "https://carpanion-queue.example.com";
+  final String backendUrl = "https://carpanion.onrender.com";
   late String sessionId;
   IO.Socket? socket;
   final List<String> _recentlyAdded = [];
