@@ -287,7 +287,7 @@ class _QueueTabState extends State<QueueTab> {
   void _playQueueAt(String videoId, String playlistId) {
     final intent = AndroidIntent(
       action: 'action_view',
-      data: 'https://music.youtube.com/watch?v=$videoId&list=$playlistId',
+      data: 'https://music.youtube.com/watch?v=$videoId',
       package: 'com.google.android.apps.youtube.music',
     );
     intent.launch().catchError((e) {
