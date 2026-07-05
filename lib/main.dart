@@ -1933,34 +1933,24 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                children: [
-                  GestureDetector(
-                    onTap: () => setState(() => _showQueue = false),
-                    child: Text(
-                      "FAVORITES",
-                      style: TextStyle(
-                        color: !_showQueue ? theme.colorScheme.primary : onSurface.withOpacity(0.6),
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.5,
-                      ),
-                    ),
+              Expanded(
+                child: SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(value: false, label: Text("FAVORITES", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
+                    ButtonSegment(value: true, label: Text("QUEUE", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2))),
+                  ],
+                  selected: {_showQueue},
+                  onSelectionChanged: (Set<bool> newSelection) {
+                    setState(() {
+                      _showQueue = newSelection.first;
+                    });
+                  },
+                  showSelectedIcon: false,
+                  style: ButtonStyle(
+                    visualDensity: VisualDensity.compact,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
-                  const SizedBox(width: 16),
-                  GestureDetector(
-                    onTap: () => setState(() => _showQueue = true),
-                    child: Text(
-                      "QUEUE",
-                      style: TextStyle(
-                        color: _showQueue ? theme.colorScheme.primary : onSurface.withOpacity(0.6),
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.5,
-                      ),
-                    ),
-                  ),
-                ],
+                ),
               ),
               if (!_showQueue)
                 GestureDetector(

@@ -18,7 +18,8 @@ class _QueueTabState extends State<QueueTab> {
   late String sessionId;
   IO.Socket? socket;
   final List<String> _recentlyAdded = [];
-  bool _showQrCode = true;
+  bool _queueStarted = false;
+  bool _showQrCodeOverlay = false;
   bool _allowEditing = false;
   late YouTubeService _ytService;
 
@@ -129,6 +130,10 @@ class _QueueTabState extends State<QueueTab> {
   }
 
   void _playQueue(String playlistId) {
+    setState(() {
+      _queueStarted = true;
+      _showQrCodeOverlay = false;
+    });
     final intent = AndroidIntent(
       action: 'action_view',
       data: 'https://music.youtube.com/playlist?list=$playlistId',
@@ -180,35 +185,25 @@ class _QueueTabState extends State<QueueTab> {
               )
             else ...[
               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  Row(
-                    children: [
-                      Switch(
-                        value: _showQrCode,
-                        onChanged: (val) => setState(() => _showQrCode = val),
-                        activeColor: theme.colorScheme.primary,
-                      ),
-                      Text("Show QR", style: TextStyle(fontSize: 10)),
-                    ],
+                  IconButton(
+                    icon: Icon(Icons.qr_code, color: _showQrCodeOverlay ? theme.colorScheme.primary : onSurface.withOpacity(0.5)),
+                    onPressed: () => setState(() => _showQrCodeOverlay = !_showQrCodeOverlay),
+                    tooltip: 'Toggle QR Code',
                   ),
-                  Row(
-                    children: [
-                      Switch(
-                        value: _allowEditing,
-                        onChanged: (val) {
-                          setState(() => _allowEditing = val);
-                          socket?.emit('update_permissions', val);
-                        },
-                        activeColor: theme.colorScheme.primary,
-                      ),
-                      Text("Allow Edit", style: TextStyle(fontSize: 10)),
-                    ],
+                  IconButton(
+                    icon: Icon(_allowEditing ? Icons.edit : Icons.edit_off, color: _allowEditing ? theme.colorScheme.primary : onSurface.withOpacity(0.5)),
+                    onPressed: () {
+                      setState(() => _allowEditing = !_allowEditing);
+                      socket?.emit('update_permissions', _allowEditing);
+                    },
+                    tooltip: 'Allow Passenger Editing',
                   ),
                 ],
               ),
               const SizedBox(height: 8),
-              if (_showQrCode) ...[
+              if (!_queueStarted || _showQrCodeOverlay) ...[
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
@@ -218,79 +213,100 @@ class _QueueTabState extends State<QueueTab> {
                   child: QrImageView(
                     data: '$backendUrl/?session=$sessionId',
                     version: QrVersions.auto,
-                    size: 120.0,
+                    size: 160.0,
                     backgroundColor: Colors.white,
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 16),
                 Text(
                   "Session: $sessionId",
                   style: TextStyle(
                     color: onSurface,
-                    fontSize: 16,
+                    fontSize: 20,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   "Scan to add songs to the queue",
-                  style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 12),
+                  style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 14),
                 ),
-              ] else ...[
-                Text(
-                  "NEXT UP",
-                  style: TextStyle(
-                    color: onSurface.withOpacity(0.6),
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.5,
+                const SizedBox(height: 24),
+                if (!_queueStarted)
+                  ElevatedButton.icon(
+                    onPressed: ytService.playlistId != null 
+                        ? () => _playQueue(ytService.playlistId!) 
+                        : null,
+                    icon: const Icon(Icons.play_arrow, size: 28),
+                    label: const Text("START QUEUE", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: theme.colorScheme.primary,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                    ),
+                  ),
+              ],
+              if (_queueStarted && !_showQrCodeOverlay) ...[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    "NEXT UP",
+                    style: TextStyle(
+                      color: onSurface.withOpacity(0.6),
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.5,
+                    ),
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 12),
                 ...ytService.currentQueue.map((item) {
-                  return ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
-                    leading: ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: Image.network(item['thumbnail'] ?? '', width: 40, height: 40, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Icon(Icons.music_note)),
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12.0),
+                    child: ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      dense: true,
+                      leading: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.network(
+                          item['thumbnail'] ?? '', 
+                          width: 56, 
+                          height: 56, 
+                          fit: BoxFit.cover, 
+                          errorBuilder: (_, __, ___) => Container(
+                            width: 56, height: 56, color: Colors.grey.withOpacity(0.2), 
+                            child: const Icon(Icons.music_note)
+                          )
+                        ),
+                      ),
+                      title: Text(
+                        item['title'] ?? 'Unknown', 
+                        maxLines: 1, 
+                        overflow: TextOverflow.ellipsis, 
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: onSurface)
+                      ),
+                      subtitle: Text(
+                        item['artist'] ?? 'Unknown Artist',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 14, color: onSurface.withOpacity(0.5)),
+                      ),
                     ),
-                    title: Text(item['title'] ?? 'Unknown', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12)),
                   );
                 }),
+                if (ytService.currentQueue.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(32.0),
+                    child: Center(
+                      child: Text(
+                        "Queue is empty.\nScan the QR code to add songs!",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: onSurface.withOpacity(0.5), fontSize: 16),
+                      ),
+                    ),
+                  )
               ],
-              const SizedBox(height: 16),
-              if (_recentlyAdded.isNotEmpty) ...[
-                Text(
-                  "Recently Added",
-                  style: TextStyle(
-                    color: onSurface.withOpacity(0.6),
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.5,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                ..._recentlyAdded.map((song) => Text(
-                  song,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: onSurface, fontSize: 12),
-                )),
-                const SizedBox(height: 16),
-              ],
-              ElevatedButton.icon(
-                onPressed: ytService.playlistId != null 
-                    ? () => _playQueue(ytService.playlistId!) 
-                    : null,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text("PLAY QUEUE"),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: theme.colorScheme.primary,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                ),
-              ),
             ]
           ],
         ),

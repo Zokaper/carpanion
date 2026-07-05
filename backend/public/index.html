@@ -76,19 +76,28 @@
       display: flex;
       align-items: center;
       padding: 12px;
-      border-bottom: 1px solid #333;
+      margin-bottom: 8px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 12px;
+      transition: background 0.2s;
     }
-    .result-item:last-child, .queue-item:last-child { border-bottom: none; }
-    .result-item img, .queue-item img {
+    .queue-item:hover { background: rgba(255, 255, 255, 0.1); }
+    .queue-item img {
       width: 48px;
       height: 48px;
-      border-radius: 4px;
+      border-radius: 8px;
       object-fit: cover;
-      margin-right: 12px;
+      margin-right: 16px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
     }
-    .info { flex: 1; overflow: hidden; }
-    .title { font-weight: bold; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .channel { color: #aaa; font-size: 12px; }
+    .queue-item .info { flex-grow: 1; overflow: hidden; }
+    .queue-item .title { font-weight: bold; font-size: 15px; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #fff; }
+    .queue-item .artist { font-size: 13px; color: #aaa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .queue-item .controls {
+      display: flex;
+      gap: 8px;
+      margin-left: 12px;
+    }
     ul { list-style: none; padding: 0; margin: 0; }
     .controls { display: flex; gap: 4px; }
     .controls button { padding: 4px 8px; border-radius: 4px; font-size: 12px; }

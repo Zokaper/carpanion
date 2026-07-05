@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/youtube/v3.dart' as youtube;
@@ -21,6 +22,42 @@ class YouTubeService extends ChangeNotifier {
   String? get playlistId => _playlistId;
   
   List<Map<String, dynamic>> currentQueue = [];
+  final Map<String, Map<String, String>> _itunesMetadataCache = {};
+
+  Future<Map<String, String>> _getItunesMetadata(String youtubeTitle, String defaultThumb) async {
+    if (_itunesMetadataCache.containsKey(youtubeTitle)) {
+      return _itunesMetadataCache[youtubeTitle]!;
+    }
+    
+    String cleanTitle = youtubeTitle
+      .replaceAll(RegExp(r'\(.*?\)'), '')
+      .replaceAll(RegExp(r'\[.*?\]'), '')
+      .replaceAll(RegExp(r'(?i)official audio'), '')
+      .replaceAll(RegExp(r'(?i)music video'), '')
+      .trim();
+      
+    try {
+      final url = Uri.parse('https://itunes.apple.com/search?term=${Uri.encodeComponent(cleanTitle)}&entity=song&limit=1');
+      final res = await http.get(url).timeout(const Duration(seconds: 3));
+      final data = jsonDecode(res.body);
+      if (data['results'] != null && data['results'].isNotEmpty) {
+        final trackName = data['results'][0]['trackName']?.toString() ?? cleanTitle;
+        final artistName = data['results'][0]['artistName']?.toString() ?? 'Unknown Artist';
+        final artwork = data['results'][0]['artworkUrl100']?.toString() ?? defaultThumb;
+        // Replace with higher resolution artwork (100x100 to 400x400)
+        final highResArtwork = artwork.replaceAll('100x100bb.jpg', '400x400bb.jpg');
+        final meta = {'title': trackName, 'artist': artistName, 'thumbnail': highResArtwork};
+        _itunesMetadataCache[youtubeTitle] = meta;
+        return meta;
+      }
+    } catch(e) {
+      debugPrint("iTunes metadata fetch failed for $youtubeTitle: $e");
+    }
+    
+    final meta = {'title': cleanTitle, 'artist': 'YouTube', 'thumbnail': defaultThumb};
+    _itunesMetadataCache[youtubeTitle] = meta;
+    return meta;
+  }
 
   YouTubeService() {
     _googleSignIn.onCurrentUserChanged.listen((GoogleSignInAccount? account) async {
@@ -144,16 +181,27 @@ class YouTubeService extends ChangeNotifier {
           maxResults: 50
         );
         
-        currentQueue = items.items?.map((item) {
+        final mappedItems = items.items?.map((item) {
           return {
             'id': item.id ?? '',
             'videoId': item.snippet?.resourceId?.videoId ?? '',
-            'title': item.snippet?.title ?? 'Unknown',
-            'thumbnail': item.snippet?.thumbnails?.default_?.url ?? '',
+            'rawTitle': item.snippet?.title ?? 'Unknown',
+            'rawThumbnail': item.snippet?.thumbnails?.default_?.url ?? '',
             'position': item.snippet?.position ?? 0,
           };
         }).toList() ?? [];
+
+        final enrichedItems = await Future.wait(mappedItems.map((item) async {
+          final meta = await _getItunesMetadata(item['rawTitle'] as String, item['rawThumbnail'] as String);
+          return {
+            ...item,
+            'title': meta['title'],
+            'artist': meta['artist'],
+            'thumbnail': meta['thumbnail'],
+          };
+        }));
         
+        currentQueue = enrichedItems;
         currentQueue.sort((a, b) => (a['position'] as int).compareTo(b['position'] as int));
       });
       notifyListeners();

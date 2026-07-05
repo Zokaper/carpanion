@@ -81,15 +81,16 @@ if (currentSession && typeof io !== 'undefined') {
       const li = document.createElement('li');
       li.className = 'queue-item';
       li.innerHTML = `
-        <img src="${item.thumbnail}" alt="thumb">
+        <img src="${item.thumbnail}" alt="thumb" onerror="this.src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCI+PHJlY3Qgd2lkdGg9IjQ4IiBoZWlnaHQ9IjQ4IiBmaWxsPSIjMzMzIi8+PC9zdmc+'">
         <div class="info">
           <div class="title">${item.title}</div>
+          <div class="artist">${item.artist || 'Unknown Artist'}</div>
         </div>
         ${canEdit ? `
           <div class="controls">
             ${index > 0 ? `<button onclick="reorder('${item.id}', '${item.videoId}', ${item.position - 1})">⬆️</button>` : ''}
             ${index < currentQueueState.length - 1 ? `<button onclick="reorder('${item.id}', '${item.videoId}', ${item.position + 1})">⬇️</button>` : ''}
-            <button onclick="deleteSong('${item.id}')" style="background: #ff5252">❌</button>
+            <button onclick="deleteSong('${item.id}')" style="background: rgba(255,0,0,0.2); color: #ff4444;">✕</button>
           </div>
         ` : ''}
       `;
