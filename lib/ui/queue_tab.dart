@@ -434,7 +434,20 @@ class _QueueTabState extends State<QueueTab> {
                                       TextButton(
                                         onPressed: () {
                                           Navigator.pop(context);
-                                          ytService.clearPlaylist();
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(content: Text('Clearing queue... Please wait.')),
+                                          );
+                                          ytService.clearPlaylist().then((_) {
+                                            if (mounted) {
+                                              setState(() {
+                                                _queueStarted = false;
+                                                _showQrCodeOverlay = true;
+                                              });
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                const SnackBar(content: Text('Queue cleared! Please add a song to restart.')),
+                                              );
+                                            }
+                                          });
                                         },
                                         child: const Text('CLEAR', style: TextStyle(color: Colors.redAccent)),
                                       ),
