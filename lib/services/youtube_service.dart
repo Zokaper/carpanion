@@ -26,6 +26,9 @@ class YouTubeService extends ChangeNotifier {
 
   bool _isAdding = false;
 
+  DateTime? lastAddedTime;
+  int recentlyAddedCount = 0;
+
   Future<Map<String, String>> _getItunesMetadata(String youtubeTitle, String youtubeChannel, String defaultThumb) async {
     final cacheKey = '$youtubeTitle|$youtubeChannel';
     if (_itunesMetadataCache.containsKey(cacheKey)) {
@@ -179,6 +182,16 @@ class YouTubeService extends ChangeNotifier {
     
     _isAdding = true;
     try {
+      final existingIndex = currentQueue.indexWhere((item) => item['videoId'] == videoId);
+      if (existingIndex != -1) {
+        final playlistItemId = currentQueue[existingIndex]['id'];
+        await _withAuthRetry(() async {
+          await _youtubeApi!.playlistItems.delete(playlistItemId);
+        });
+        // Remove from local queue temporarily so it doesn't mess up state
+        currentQueue.removeAt(existingIndex);
+      }
+
       await _withAuthRetry(() async {
         final item = youtube.PlaylistItem()
           ..snippet = (youtube.PlaylistItemSnippet()
@@ -189,6 +202,15 @@ class YouTubeService extends ChangeNotifier {
               
         await _youtubeApi!.playlistItems.insert(item, ['snippet']);
       });
+      
+      final now = DateTime.now();
+      if (lastAddedTime != null && now.difference(lastAddedTime!).inSeconds < 10) {
+        recentlyAddedCount++;
+      } else {
+        recentlyAddedCount = 1;
+      }
+      lastAddedTime = now;
+      
       await fetchQueue();
       return true;
     } catch (e) {

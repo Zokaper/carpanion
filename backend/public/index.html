@@ -117,6 +117,21 @@
     .queue-item .info { flex-grow: 1; overflow: hidden; }
     .queue-item .title { font-weight: bold; font-size: 15px; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #fff; }
     .queue-item .artist { font-size: 13px; color: #aaa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    
+    #searchResults {
+      position: absolute; width: 100%; max-height: 250px; overflow-y: auto;
+      background: #1e1e28; border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px; margin-top: 4px; z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+    #searchResults li {
+      padding: 8px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      display: flex; align-items: center; gap: 12px; cursor: pointer; transition: background 0.2s;
+    }
+    #searchResults li:hover { background: rgba(255, 255, 255, 0.1); }
+    #searchResults img { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; }
+    .search-info { flex: 1; overflow: hidden; }
+    .search-title { font-weight: 600; font-size: 13px; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #fff; }
+    .search-artist { font-size: 11px; color: rgba(255, 255, 255, 0.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .queue-item .controls {
       display: flex;
       gap: 8px;

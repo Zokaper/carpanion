@@ -160,6 +160,17 @@ if (currentSession && typeof io !== 'undefined') {
   btnPlayPause.addEventListener('click', () => socket.emit('passenger_media_action', 'playPause'));
   btnNext.addEventListener('click', () => socket.emit('passenger_media_action', 'next'));
 
+  document.addEventListener('click', (e) => {
+    const searchResultsBox = document.getElementById('searchResults');
+    if (e.target.tagName === 'BUTTON' || (!searchInput.contains(e.target) && !searchResultsBox.contains(e.target))) {
+      searchResultsBox.classList.add('hidden');
+      if (e.target.tagName !== 'BUTTON') {
+        // If clicking entirely off the search, clear it to clean up the UI
+        searchInput.value = '';
+      }
+    }
+  });
+
   searchInput.addEventListener('input', (e) => {
     const query = e.target.value;
     if (!query) {
@@ -203,19 +214,18 @@ if (currentSession && typeof io !== 'undefined') {
       container.innerHTML = '<div class="result-item" style="padding: 16px;">No results</div>';
     } else {
       results.forEach(item => {
-        const div = document.createElement('div');
-        div.className = 'result-item';
+        const li = document.createElement('li');
         const escapedTitle = item.title.replace(/'/g, "\\'").replace(/"/g, "&quot;");
         const escapedChannel = item.channel.replace(/'/g, "\\'").replace(/"/g, "&quot;");
-        div.innerHTML = `
+        li.innerHTML = `
           <img src="${item.thumbnail}">
-          <div class="info">
-            <div class="title">${item.title}</div>
-            <div class="channel">${item.channel}</div>
+          <div class="search-info">
+            <div class="search-title">${item.title}</div>
+            <div class="search-artist">${item.channel}</div>
           </div>
           <button onclick="addResolvedSong('${item.videoId || ''}', '${escapedTitle}', '${escapedChannel}', ${item.isItunes})">Add</button>
         `;
-        container.appendChild(div);
+        container.appendChild(li);
       });
     }
     container.classList.remove('hidden');

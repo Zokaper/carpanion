@@ -150,6 +150,30 @@ class _QueueTabState extends State<QueueTab> {
           if (action == 'playPause') {
             await FlutterMediaController.togglePlayPause();
           } else if (action == 'next') {
+            // Anti-endless mode throttling: If the currently playing track is right before the newly added tracks,
+            // we ignore the skip to give YouTube Music time to sync the playlist from the cloud.
+            int playingIndex = _ytService.currentQueue.indexWhere((item) {
+              final qTitle = (item['title'] ?? '').toLowerCase();
+              final dTitle = _lastTrack.toLowerCase();
+              return qTitle == dTitle || qTitle.contains(dTitle) || dTitle.contains(qTitle);
+            });
+            
+            if (playingIndex != -1 && _ytService.lastAddedTime != null) {
+              final int syncThreshold = 10; // seconds
+              if (DateTime.now().difference(_ytService.lastAddedTime!).inSeconds < syncThreshold) {
+                // Check if playingIndex is at or after the boundary of old tracks
+                final safeLength = _ytService.currentQueue.length - _ytService.recentlyAddedCount;
+                if (playingIndex >= safeLength - 1) {
+                  debugPrint("Throttling NEXT command to prevent endless mode bug.");
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Syncing queue with cloud... Please wait a few seconds before skipping.'), duration: Duration(seconds: 2)),
+                    );
+                  }
+                  return;
+                }
+              }
+            }
             await FlutterMediaController.nextTrack();
           } else if (action == 'previous') {
             await FlutterMediaController.previousTrack();
