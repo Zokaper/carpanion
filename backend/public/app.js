@@ -107,7 +107,10 @@ if (currentSession && typeof io !== 'undefined') {
 
   // Search Logic
   let searchTimeout;
-  document.getElementById('searchInput').addEventListener('input', (e) => {
+  const searchInput = document.getElementById('searchInput');
+  const searchModeToggle = document.getElementById('searchMode');
+
+  searchInput.addEventListener('input', (e) => {
     const query = e.target.value;
     if (!query) {
       document.getElementById('searchResults').classList.add('hidden');
@@ -115,11 +118,35 @@ if (currentSession && typeof io !== 'undefined') {
     }
     clearTimeout(searchTimeout);
     searchTimeout = setTimeout(() => {
-      socket.emit('request_search', query);
+      if (searchModeToggle.checked) {
+        socket.emit('request_search', query);
+      } else {
+        fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=10`)
+          .then(res => res.json())
+          .then(data => {
+            renderSearchResults(data.results.map(item => ({
+              id: item.trackId,
+              title: item.trackName,
+              channel: item.artistName,
+              thumbnail: item.artworkUrl100 || item.artworkUrl60,
+              isItunes: true
+            })));
+          })
+          .catch(err => console.error(err));
+      }
     }, 500);
   });
 
   socket.on('search_results', (results) => {
+    if (searchModeToggle.checked) {
+      renderSearchResults(results.map(item => ({
+        ...item,
+        isItunes: false
+      })));
+    }
+  });
+
+  function renderSearchResults(results) {
     const container = document.getElementById('searchResults');
     container.innerHTML = '';
     if (results.length === 0) {
@@ -128,25 +155,31 @@ if (currentSession && typeof io !== 'undefined') {
       results.forEach(item => {
         const div = document.createElement('div');
         div.className = 'result-item';
+        const escapedTitle = item.title.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+        const escapedChannel = item.channel.replace(/'/g, "\\'").replace(/"/g, "&quot;");
         div.innerHTML = `
           <img src="${item.thumbnail}">
           <div class="info">
             <div class="title">${item.title}</div>
             <div class="channel">${item.channel}</div>
           </div>
-          <button onclick="addSong('${item.videoId}')">Add</button>
+          <button onclick="addResolvedSong('${item.videoId || ''}', '${escapedTitle}', '${escapedChannel}', ${item.isItunes})">Add</button>
         `;
         container.appendChild(div);
       });
     }
     container.classList.remove('hidden');
-  });
+  }
 
-  window.addSong = (videoId) => {
-    socket.emit('passenger_add_song', videoId);
+  window.addResolvedSong = (videoId, title, artist, isItunes) => {
+    if (isItunes) {
+      socket.emit('passenger_search_and_add_song', `${title} ${artist}`);
+    } else {
+      socket.emit('passenger_add_song', videoId);
+    }
     document.getElementById('searchResults').classList.add('hidden');
-    document.getElementById('searchInput').value = '';
-    document.getElementById('status').innerText = 'Song added via Search!';
+    searchInput.value = '';
+    document.getElementById('status').innerText = 'Adding to queue...';
     document.getElementById('status').className = 'success';
     setTimeout(() => { document.getElementById('status').innerText = ''; }, 3000);
   };

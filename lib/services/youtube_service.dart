@@ -55,9 +55,32 @@ class YouTubeService extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<T?> _withAuthRetry<T>(Future<T> Function() action) async {
+    try {
+      return await action();
+    } catch (e) {
+      final errorStr = e.toString();
+      if (errorStr.contains('invalid_token') || errorStr.contains('Access was denied') || errorStr.contains('401')) {
+        debugPrint("Token expired, attempting to refresh...");
+        try {
+          await _googleSignIn.signInSilently();
+          final authClient = await _googleSignIn.authenticatedClient();
+          if (authClient != null) {
+            _youtubeApi = youtube.YouTubeApi(authClient);
+            return await action();
+          }
+        } catch (refreshErr) {
+          debugPrint("Refresh failed: $refreshErr");
+        }
+      }
+      rethrow;
+    }
+  }
+
   Future<void> _ensurePlaylistExists() async {
     if (_youtubeApi == null) return;
     try {
+      await _withAuthRetry(() async {
       // Check if "Carpanion Queue" exists
       final playlists = await _youtubeApi!.playlists.list(
         ['snippet', 'id'],
@@ -83,6 +106,7 @@ class YouTubeService extends ChangeNotifier {
         final created = await _youtubeApi!.playlists.insert(newPlaylist, ['snippet', 'status']);
         _playlistId = created.id;
       }
+      });
       notifyListeners();
     } catch (e) {
       debugPrint("Error ensuring playlist: $e");
@@ -92,14 +116,16 @@ class YouTubeService extends ChangeNotifier {
   Future<bool> addVideoToPlaylist(String videoId) async {
     if (_youtubeApi == null || _playlistId == null) return false;
     try {
-      final item = youtube.PlaylistItem()
-        ..snippet = (youtube.PlaylistItemSnippet()
-          ..playlistId = _playlistId
-          ..resourceId = (youtube.ResourceId()
-            ..kind = 'youtube#video'
-            ..videoId = videoId));
-            
-      await _youtubeApi!.playlistItems.insert(item, ['snippet']);
+      await _withAuthRetry(() async {
+        final item = youtube.PlaylistItem()
+          ..snippet = (youtube.PlaylistItemSnippet()
+            ..playlistId = _playlistId
+            ..resourceId = (youtube.ResourceId()
+              ..kind = 'youtube#video'
+              ..videoId = videoId));
+              
+        await _youtubeApi!.playlistItems.insert(item, ['snippet']);
+      });
       await fetchQueue();
       return true;
     } catch (e) {
@@ -111,23 +137,25 @@ class YouTubeService extends ChangeNotifier {
   Future<void> fetchQueue() async {
     if (_youtubeApi == null || _playlistId == null) return;
     try {
-      final items = await _youtubeApi!.playlistItems.list(
-        ['snippet', 'contentDetails'], 
-        playlistId: _playlistId, 
-        maxResults: 50
-      );
-      
-      currentQueue = items.items?.map((item) {
-        return {
-          'id': item.id ?? '',
-          'videoId': item.snippet?.resourceId?.videoId ?? '',
-          'title': item.snippet?.title ?? 'Unknown',
-          'thumbnail': item.snippet?.thumbnails?.default_?.url ?? '',
-          'position': item.snippet?.position ?? 0,
-        };
-      }).toList() ?? [];
-      
-      currentQueue.sort((a, b) => (a['position'] as int).compareTo(b['position'] as int));
+      await _withAuthRetry(() async {
+        final items = await _youtubeApi!.playlistItems.list(
+          ['snippet', 'contentDetails'], 
+          playlistId: _playlistId, 
+          maxResults: 50
+        );
+        
+        currentQueue = items.items?.map((item) {
+          return {
+            'id': item.id ?? '',
+            'videoId': item.snippet?.resourceId?.videoId ?? '',
+            'title': item.snippet?.title ?? 'Unknown',
+            'thumbnail': item.snippet?.thumbnails?.default_?.url ?? '',
+            'position': item.snippet?.position ?? 0,
+          };
+        }).toList() ?? [];
+        
+        currentQueue.sort((a, b) => (a['position'] as int).compareTo(b['position'] as int));
+      });
       notifyListeners();
     } catch (e) {
       debugPrint("Error fetching queue: $e");
@@ -137,7 +165,9 @@ class YouTubeService extends ChangeNotifier {
   Future<void> deleteSong(String playlistItemId) async {
     if (_youtubeApi == null) return;
     try {
-      await _youtubeApi!.playlistItems.delete(playlistItemId);
+      await _withAuthRetry(() async {
+        await _youtubeApi!.playlistItems.delete(playlistItemId);
+      });
       await fetchQueue();
     } catch (e) {
       debugPrint("Error deleting song: $e");
@@ -147,40 +177,57 @@ class YouTubeService extends ChangeNotifier {
   Future<void> reorderSong(String playlistItemId, String videoId, int newPosition) async {
     if (_youtubeApi == null || _playlistId == null) return;
     try {
-      final item = youtube.PlaylistItem()
-        ..id = playlistItemId
-        ..snippet = (youtube.PlaylistItemSnippet()
-          ..playlistId = _playlistId
-          ..resourceId = (youtube.ResourceId()..kind = 'youtube#video'..videoId = videoId)
-          ..position = newPosition);
-      await _youtubeApi!.playlistItems.update(item, ['snippet']);
+      await _withAuthRetry(() async {
+        final item = youtube.PlaylistItem()
+          ..id = playlistItemId
+          ..snippet = (youtube.PlaylistItemSnippet()
+            ..playlistId = _playlistId
+            ..resourceId = (youtube.ResourceId()..kind = 'youtube#video'..videoId = videoId)
+            ..position = newPosition);
+        await _youtubeApi!.playlistItems.update(item, ['snippet']);
+      });
       await fetchQueue();
     } catch (e) {
       debugPrint("Error reordering song: $e");
     }
   }
 
+  Future<bool> searchAndAddSong(String query) async {
+    try {
+      final res = await searchSongs('$query official audio');
+      if (res.isNotEmpty) {
+        return await addVideoToPlaylist(res.first['videoId']);
+      }
+      return false;
+    } catch (e) {
+      debugPrint("Error in searchAndAddSong: $e");
+      return false;
+    }
+  }
+
   Future<List<Map<String, dynamic>>> searchSongs(String query) async {
     if (_youtubeApi == null) return [];
     try {
-      final res = await _youtubeApi!.search.list(
-        ['snippet'], 
-        q: query, 
-        type: ['video'], 
-        videoCategoryId: '10',
-        maxResults: 10
-      );
-      return res.items?.map((item) {
-        return {
-          'videoId': item.id?.videoId ?? '',
-          'title': item.snippet?.title ?? 'Unknown',
-          'thumbnail': item.snippet?.thumbnails?.default_?.url ?? '',
-          'channel': item.snippet?.channelTitle ?? '',
-        };
-      }).toList() ?? [];
+      return await _withAuthRetry(() async {
+        final res = await _youtubeApi!.search.list(
+          ['snippet'], 
+          q: query, 
+          type: ['video'], 
+          videoCategoryId: '10',
+          maxResults: 10
+        );
+        return res.items?.map((item) {
+          return {
+            'videoId': item.id?.videoId ?? '',
+            'title': item.snippet?.title ?? 'Unknown',
+            'thumbnail': item.snippet?.thumbnails?.default_?.url ?? '',
+            'channel': item.snippet?.channelTitle ?? '',
+          };
+        }).toList() ?? <Map<String, dynamic>>[];
+      }) ?? <Map<String, dynamic>>[];
     } catch (e) {
       debugPrint("Error searching songs: $e");
-      return [];
+      return <Map<String, dynamic>>[];
     }
   }
 }

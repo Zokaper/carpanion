@@ -82,6 +82,14 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('passenger_search_and_add_song', (query) => {
+    const sessionId = socket.data.sessionId;
+    const carSocketId = activeSessions.get(sessionId);
+    if (carSocketId) {
+      io.to(carSocketId).emit('passenger_search_and_add_song', query);
+    }
+  });
+
   socket.on('passenger_add_song', (videoId) => {
     const sessionId = socket.data.sessionId;
     const carSocketId = activeSessions.get(sessionId);

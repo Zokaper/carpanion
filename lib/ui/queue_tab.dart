@@ -82,6 +82,20 @@ class _QueueTabState extends State<QueueTab> {
       socket!.emit('update_permissions', _allowEditing);
     });
 
+    socket!.on('passenger_search_and_add_song', (query) async {
+      debugPrint("Received passenger_search_and_add_song event: $query");
+      final success = await _ytService.searchAndAddSong(query);
+      if (success && mounted) {
+        setState(() {
+          _recentlyAdded.insert(0, query);
+          if (_recentlyAdded.length > 5) _recentlyAdded.removeLast();
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Resolved & Added: $query'), duration: const Duration(seconds: 2)),
+        );
+      }
+    });
+
     socket!.on('request_search', (data) async {
       final passengerId = data['passengerId'];
       final query = data['query'];
