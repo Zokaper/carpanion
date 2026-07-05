@@ -240,6 +240,8 @@ class YouTubeService extends ChangeNotifier {
           };
         }).toList() ?? [];
 
+        mappedItems.sort((a, b) => (a['position'] as int).compareTo(b['position'] as int));
+
         List<Map<String, dynamic>> enrichedItems = [];
         for (var item in mappedItems) {
           final meta = await _getItunesMetadata(item['rawTitle'] as String, item['rawChannel'] as String, item['rawThumbnail'] as String);
