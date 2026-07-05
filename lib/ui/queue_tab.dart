@@ -31,6 +31,7 @@ class _QueueTabState extends State<QueueTab> {
   late DashboardProvider _dashboard;
   Timer? _pollTimer;
   String _lastTrack = '';
+  int _lastValidIndex = -1;
   
   final ScrollController _scrollController = ScrollController();
   bool _userScrolled = false;
@@ -70,6 +71,28 @@ class _QueueTabState extends State<QueueTab> {
       if (socket?.connected == true) {
         socket!.emit('update_playing_status', _lastTrack);
       }
+      
+      if (_queueStarted) {
+        int index = _ytService.currentQueue.indexWhere((item) {
+          final qTitle = (item['title'] ?? '').toLowerCase();
+          final dTitle = _lastTrack.toLowerCase();
+          return qTitle == dTitle || qTitle.contains(dTitle) || dTitle.contains(qTitle);
+        });
+
+        if (index != -1) {
+          _lastValidIndex = index;
+        } else if (_lastValidIndex != -1 && _ytService.currentQueue.length > _lastValidIndex + 1) {
+          debugPrint("Auto-Recovery: YT Music fell into endless mode! Forcing playback of next song in queue.");
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Auto-Recovery: Forcing YT Music back to Collab Playlist...')),
+            );
+          }
+          final nextVideoId = _ytService.currentQueue[_lastValidIndex + 1]['videoId'];
+          _playQueueAt(nextVideoId, _ytService.playlistId!);
+        }
+      }
+
       _scrollToPlayingTrack();
     }
   }
@@ -259,6 +282,28 @@ class _QueueTabState extends State<QueueTab> {
     if (mounted) {
       Provider.of<DashboardProvider>(context, listen: false).setWaitingForMusic();
     }
+  }
+
+  void _playQueueAt(String videoId, String playlistId) {
+    final intent = AndroidIntent(
+      action: 'action_view',
+      data: 'https://music.youtube.com/watch?v=$videoId&list=$playlistId',
+      package: 'com.google.android.apps.youtube.music',
+    );
+    intent.launch().catchError((e) {
+      debugPrint("Could not launch targeted YT Music intent: $e");
+    });
+    
+    // Attempt to automatically pull the Dashboard back to the front after 2 seconds
+    Future.delayed(const Duration(seconds: 2), () {
+      final backIntent = AndroidIntent(
+        action: 'action_main',
+        package: 'com.example.car_dashboard',
+        componentName: 'com.example.car_dashboard.MainActivity',
+        flags: [268435456, 131072], // FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_REORDER_TO_FRONT
+      );
+      backIntent.launch().catchError((e) => debugPrint("Could not reorder Dashboard to front: $e"));
+    });
   }
 
   @override
