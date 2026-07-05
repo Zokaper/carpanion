@@ -1926,7 +1926,7 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
       children: [
         // Sidebar Header
         Padding(
-          padding: const EdgeInsets.only(bottom: 6.0, left: 4.0),
+          padding: const EdgeInsets.only(bottom: 2.0, left: 4.0),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [

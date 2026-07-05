@@ -26,7 +26,12 @@ class _QueueTabState extends State<QueueTab> {
   bool _showQrCodeOverlay = false;
   bool _allowEditing = false;
   late YouTubeService _ytService;
+  late DashboardProvider _dashboard;
   Timer? _pollTimer;
+  String _lastTrack = '';
+  
+  final ScrollController _scrollController = ScrollController();
+  bool _userScrolled = false;
 
   @override
   void initState() {
@@ -36,7 +41,11 @@ class _QueueTabState extends State<QueueTab> {
     }
     sessionId = _persistedSessionId!;
     _ytService = Provider.of<YouTubeService>(context, listen: false);
+    _dashboard = Provider.of<DashboardProvider>(context, listen: false);
+    
     _ytService.addListener(_onYouTubeServiceUpdate);
+    _dashboard.addListener(_onDashboardUpdate);
+    
     _connectSocket();
     
     // Initial fetch and start polling every 10 seconds to catch external edits
@@ -44,6 +53,30 @@ class _QueueTabState extends State<QueueTab> {
     _pollTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       if (mounted) _ytService.fetchQueue();
     });
+  }
+
+  void _onDashboardUpdate() {
+    if (_dashboard.currentTrack != _lastTrack) {
+      _lastTrack = _dashboard.currentTrack;
+      if (socket?.connected == true) {
+        socket!.emit('update_playing_status', _lastTrack);
+      }
+      _scrollToPlayingTrack();
+    }
+  }
+
+  void _scrollToPlayingTrack() {
+    if (_userScrolled || !_scrollController.hasClients) return;
+    int index = _ytService.currentQueue.indexWhere((item) => item['title'] == _lastTrack);
+    if (index != -1) {
+      // Calculate approximate position to center the item (approx 60px height per item)
+      final position = (index * 60.0) - (150.0);
+      _scrollController.animateTo(
+        position > 0 ? position : 0,
+        duration: const Duration(milliseconds: 500),
+        curve: Curves.easeInOut,
+      );
+    }
   }
 
   void _onYouTubeServiceUpdate() {
@@ -141,6 +174,8 @@ class _QueueTabState extends State<QueueTab> {
     _pollTimer?.cancel();
     socket?.disconnect();
     _ytService.removeListener(_onYouTubeServiceUpdate);
+    _dashboard.removeListener(_onDashboardUpdate);
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -169,10 +204,9 @@ class _QueueTabState extends State<QueueTab> {
     final onSurface = theme.colorScheme.onSurface;
 
     return Padding(
-      padding: const EdgeInsets.all(8.0),
+      padding: const EdgeInsets.only(top: 4.0),
       child: Column(
         children: [
-          const SizedBox(height: 8),
           if (!ytService.isSignedIn)
             Padding(
               padding: const EdgeInsets.only(top: 32.0),
@@ -296,7 +330,7 @@ class _QueueTabState extends State<QueueTab> {
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 4),
               Expanded(
                 child: ytService.currentQueue.isEmpty
                   ? Center(
@@ -306,43 +340,79 @@ class _QueueTabState extends State<QueueTab> {
                         style: TextStyle(color: onSurface.withOpacity(0.5), fontSize: 16),
                       ),
                     )
-                  : ListView.builder(
-                      itemCount: ytService.currentQueue.length,
-                      itemBuilder: (context, index) {
-                        final item = ytService.currentQueue[index];
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 12.0),
-                          child: ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            dense: true,
-                            leading: ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: Image.network(
-                                item['thumbnail'] ?? '', 
-                                width: 48, 
-                                height: 48, 
-                                fit: BoxFit.cover, 
-                                errorBuilder: (_, __, ___) => Container(
-                                  width: 48, height: 48, color: Colors.grey.withOpacity(0.2), 
-                                  child: const Icon(Icons.music_note)
-                                )
-                              ),
-                            ),
-                            title: Text(
-                              item['title'] ?? 'Unknown', 
-                              maxLines: 1, 
-                              overflow: TextOverflow.ellipsis, 
-                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: onSurface)
-                            ),
-                            subtitle: Text(
-                              item['artist'] ?? 'Unknown Artist',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(fontSize: 13, color: onSurface.withOpacity(0.5)),
+                  : Stack(
+                      children: [
+                        NotificationListener<ScrollUpdateNotification>(
+                          onNotification: (notification) {
+                            if (notification.dragDetails != null && !_userScrolled) {
+                              setState(() => _userScrolled = true);
+                            }
+                            return false;
+                          },
+                          child: ListView.builder(
+                            controller: _scrollController,
+                            itemCount: ytService.currentQueue.length,
+                            itemBuilder: (context, index) {
+                              final item = ytService.currentQueue[index];
+                              final isPlaying = item['title'] == _lastTrack;
+                              
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 8.0),
+                                child: Container(
+                                  decoration: isPlaying ? BoxDecoration(
+                                    color: theme.colorScheme.primary.withOpacity(0.15),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border(left: BorderSide(color: theme.colorScheme.primary, width: 4)),
+                                  ) : null,
+                                  padding: isPlaying ? const EdgeInsets.only(left: 8.0, top: 4.0, bottom: 4.0) : EdgeInsets.zero,
+                                  child: ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    dense: true,
+                                    leading: ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: Image.network(
+                                        item['thumbnail'] ?? '', 
+                                        width: 48, 
+                                        height: 48, 
+                                        fit: BoxFit.cover, 
+                                        errorBuilder: (_, __, ___) => Container(
+                                          width: 48, height: 48, color: Colors.grey.withOpacity(0.2), 
+                                          child: const Icon(Icons.music_note)
+                                        )
+                                      ),
+                                    ),
+                                    title: Text(
+                                      item['title'] ?? 'Unknown', 
+                                      maxLines: 1, 
+                                      overflow: TextOverflow.ellipsis, 
+                                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: isPlaying ? theme.colorScheme.primary : onSurface)
+                                    ),
+                                    subtitle: Text(
+                                      item['artist'] ?? 'Unknown Artist',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(fontSize: 13, color: onSurface.withOpacity(0.5)),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        if (_userScrolled)
+                          Positioned(
+                            bottom: 16,
+                            right: 8,
+                            child: FloatingActionButton.small(
+                              backgroundColor: theme.colorScheme.primary,
+                              onPressed: () {
+                                setState(() => _userScrolled = false);
+                                _scrollToPlayingTrack();
+                              },
+                              child: const Icon(Icons.my_location, color: Colors.white),
                             ),
                           ),
-                        );
-                      },
+                      ],
                     ),
               ),
             ]

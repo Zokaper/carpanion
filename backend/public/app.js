@@ -59,6 +59,9 @@ if (currentSession && typeof io !== 'undefined') {
   const socket = io();
   let canEdit = false;
   let currentQueueState = [];
+  let sortableInstance = null;
+  let isQueueSyncing = false;
+  let currentPlayingTitle = "";
 
   socket.on('connect', () => {
     socket.emit('join_passenger', currentSession);
@@ -66,6 +69,13 @@ if (currentSession && typeof io !== 'undefined') {
 
   socket.on('queue_updated', (queue) => {
     currentQueueState = queue;
+    isQueueSyncing = false;
+    document.getElementById('queueList').style.opacity = '1';
+    renderQueue();
+  });
+
+  socket.on('now_playing_updated', (title) => {
+    currentPlayingTitle = title;
     renderQueue();
   });
 
@@ -77,9 +87,17 @@ if (currentSession && typeof io !== 'undefined') {
   function renderQueue() {
     const list = document.getElementById('queueList');
     list.innerHTML = '';
+    
+    if (sortableInstance) {
+      sortableInstance.destroy();
+      sortableInstance = null;
+    }
+    
     currentQueueState.forEach((item, index) => {
       const li = document.createElement('li');
-      li.className = 'queue-item';
+      li.className = 'queue-item' + (currentPlayingTitle === item.title ? ' playing' : '');
+      li.dataset.id = item.id;
+      li.dataset.videoId = item.videoId;
       li.innerHTML = `
         <img src="${item.thumbnail}" alt="thumb" onerror="this.src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCI+PHJlY3Qgd2lkdGg9IjQ4IiBoZWlnaHQ9IjQ4IiBmaWxsPSIjMzMzIi8+PC9zdmc+'">
         <div class="info">
@@ -88,17 +106,32 @@ if (currentSession && typeof io !== 'undefined') {
         </div>
         ${canEdit ? `
           <div class="controls">
-            ${index > 0 ? `<button onclick="reorder('${item.id}', '${item.videoId}', ${item.position - 1})">⬆️</button>` : ''}
-            ${index < currentQueueState.length - 1 ? `<button onclick="reorder('${item.id}', '${item.videoId}', ${item.position + 1})">⬇️</button>` : ''}
-            <button onclick="deleteSong('${item.id}')" style="background: rgba(255,0,0,0.2); color: #ff4444;">✕</button>
+            <button onclick="deleteSong('${item.id}')" style="background: rgba(255,0,0,0.2); color: #ff4444; margin-right: 8px;">✕</button>
+            <div class="drag-handle" style="font-size: 20px; color: #888; cursor: grab; padding: 4px;">☰</div>
           </div>
         ` : ''}
       `;
       list.appendChild(li);
     });
+
+    if (canEdit && !isQueueSyncing) {
+      sortableInstance = Sortable.create(list, {
+        handle: '.drag-handle',
+        animation: 150,
+        onEnd: function (evt) {
+          if (evt.oldIndex === evt.newIndex) return;
+          const item = currentQueueState[evt.oldIndex];
+          isQueueSyncing = true;
+          document.getElementById('queueList').style.opacity = '0.5';
+          reorder(item.id, item.videoId, evt.newIndex);
+        }
+      });
+    }
   }
 
   window.deleteSong = (playlistItemId) => {
+    isQueueSyncing = true;
+    document.getElementById('queueList').style.opacity = '0.5';
     socket.emit('passenger_delete_song', playlistItemId);
   };
 

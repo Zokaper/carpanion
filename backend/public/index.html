@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Carpanion Queue</title>
   <link rel="manifest" href="manifest.json">
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
   <style>
     body {
       background-color: #121212;
@@ -71,8 +72,31 @@
       z-index: 1000;
       box-shadow: 0 4px 12px rgba(0,0,0,0.5);
     }
+    .queue-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      transition: opacity 0.2s ease;
+    }
+    .queue-item {
+      display: flex;
+      align-items: center;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.05);
+      margin-bottom: 8px;
+      border-radius: 12px;
+      transition: background 0.3s ease, border-left 0.3s ease;
+      border-left: 4px solid transparent;
+    }
+    .queue-item.playing {
+      background: rgba(100, 255, 100, 0.15);
+      border-left: 4px solid #64ff64;
+    }
+    .drag-handle:active {
+      cursor: grabbing !important;
+    }
     .hidden { display: none !important; }
-    .result-item, .queue-item {
+    .result-item {
       display: flex;
       align-items: center;
       padding: 12px;
