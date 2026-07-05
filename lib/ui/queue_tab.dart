@@ -17,6 +17,7 @@ class QueueTab extends StatefulWidget {
 
 class _QueueTabState extends State<QueueTab> {
   final String backendUrl = "https://carpanion.onrender.com";
+  static String? _persistedSessionId;
   late String sessionId;
   IO.Socket? socket;
   final List<String> _recentlyAdded = [];
@@ -29,7 +30,10 @@ class _QueueTabState extends State<QueueTab> {
   @override
   void initState() {
     super.initState();
-    sessionId = _generateSessionId();
+    if (_persistedSessionId == null) {
+      _persistedSessionId = _generateSessionId();
+    }
+    sessionId = _persistedSessionId!;
     _ytService = Provider.of<YouTubeService>(context, listen: false);
     _ytService.addListener(_onYouTubeServiceUpdate);
     _connectSocket();

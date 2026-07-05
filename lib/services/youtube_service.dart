@@ -61,7 +61,7 @@ class YouTubeService extends ChangeNotifier {
     }
     
     final meta = {'title': cleanTitle, 'artist': cleanChannel.isNotEmpty ? cleanChannel : 'YouTube', 'thumbnail': defaultThumb};
-    _itunesMetadataCache[cacheKey] = meta;
+    // Do not cache the fallback so it can retry next time
     return meta;
   }
 
