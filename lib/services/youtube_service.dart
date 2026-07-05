@@ -26,6 +26,7 @@ class YouTubeService extends ChangeNotifier {
 
   bool _isAdding = false;
 
+  String? lastAddedVideoId;
   DateTime? lastAddedTime;
   int recentlyAddedCount = 0;
 
@@ -182,6 +183,11 @@ class YouTubeService extends ChangeNotifier {
     
     _isAdding = true;
     try {
+      if (lastAddedVideoId == videoId && lastAddedTime != null && DateTime.now().difference(lastAddedTime!).inSeconds < 5) {
+        debugPrint("Ignoring duplicate add request for same video within 5 seconds.");
+        return true;
+      }
+
       final existingIndex = currentQueue.indexWhere((item) => item['videoId'] == videoId);
       if (existingIndex != -1) {
         final playlistItemId = currentQueue[existingIndex]['id'];
@@ -210,6 +216,7 @@ class YouTubeService extends ChangeNotifier {
         recentlyAddedCount = 1;
       }
       lastAddedTime = now;
+      lastAddedVideoId = videoId;
       
       await fetchQueue();
       return true;
