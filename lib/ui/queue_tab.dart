@@ -111,6 +111,8 @@ class _QueueTabState extends State<QueueTab> {
       .build()
     );
 
+    // Clear any cached listeners from previous hot reloads before attaching new ones
+    socket!.clearListeners();
     socket!.connect();
 
     socket!.onConnect((_) {
@@ -232,7 +234,9 @@ class _QueueTabState extends State<QueueTab> {
   @override
   void dispose() {
     _pollTimer?.cancel();
+    socket?.clearListeners();
     socket?.disconnect();
+    socket?.dispose();
     _ytService.removeListener(_onYouTubeServiceUpdate);
     _dashboard.removeListener(_onDashboardUpdate);
     _scrollController.dispose();
