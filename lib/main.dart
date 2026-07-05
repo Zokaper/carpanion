@@ -1974,7 +1974,7 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
                             ),
                             child: Center(
                               child: Text(
-                                "QUEUE", 
+                                "COLLAB", 
                                 style: TextStyle(
                                   color: _showQueue ? Colors.white : onSurface.withOpacity(0.6), 
                                   fontSize: 10, 

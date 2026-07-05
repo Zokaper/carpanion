@@ -208,7 +208,7 @@ class _QueueTabState extends State<QueueTab> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      "Scan to add songs to the queue",
+                      "Scan to add songs to the collab playlist",
                       style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 11),
                     ),
                     const SizedBox(height: 16),
@@ -216,7 +216,7 @@ class _QueueTabState extends State<QueueTab> {
                       ElevatedButton.icon(
                         onPressed: ytService.playlistId != null ? () => _playQueue(ytService.playlistId!) : null,
                         icon: const Icon(Icons.play_arrow, size: 20),
-                        label: const Text("START QUEUE", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                        label: const Text("START COLLAB", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: theme.colorScheme.primary,
                           foregroundColor: Colors.white,
@@ -228,7 +228,7 @@ class _QueueTabState extends State<QueueTab> {
                       ElevatedButton.icon(
                         onPressed: () => setState(() => _showQrCodeOverlay = false),
                         icon: const Icon(Icons.arrow_back, size: 20),
-                        label: const Text("BACK TO QUEUE", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                        label: const Text("BACK TO COLLAB", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.white24,
                           foregroundColor: Colors.white,
@@ -283,7 +283,7 @@ class _QueueTabState extends State<QueueTab> {
                 child: ytService.currentQueue.isEmpty
                   ? Center(
                       child: Text(
-                        "Queue is empty.\nScan the QR code to add songs!",
+                        "Collab playlist is empty.\nScan the QR code to add songs!",
                         textAlign: TextAlign.center,
                         style: TextStyle(color: onSurface.withOpacity(0.5), fontSize: 16),
                       ),
