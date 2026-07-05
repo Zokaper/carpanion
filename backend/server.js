@@ -107,7 +107,8 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('update_queue', (queue) => {
+  socket.on('update_queue', (queueData) => {
+    let queue = typeof queueData === 'string' ? JSON.parse(queueData) : queueData;
     // Find sessionId for this car
     for (const [sessionId, sockId] of activeSessions.entries()) {
       if (sockId === socket.id) {

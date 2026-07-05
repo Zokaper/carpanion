@@ -227,15 +227,18 @@ class YouTubeService extends ChangeNotifier {
           };
         }).toList() ?? [];
 
-        final enrichedItems = await Future.wait(mappedItems.map((item) async {
+        List<Map<String, dynamic>> enrichedItems = [];
+        for (var item in mappedItems) {
           final meta = await _getItunesMetadata(item['rawTitle'] as String, item['rawChannel'] as String, item['rawThumbnail'] as String);
-          return {
+          enrichedItems.add({
             ...item,
             'title': meta['title'],
             'artist': meta['artist'],
             'thumbnail': meta['thumbnail'],
-          };
-        }));
+          });
+          // Slight delay to prevent hitting the iTunes API rate limit
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
         
         currentQueue = enrichedItems;
         currentQueue.sort((a, b) => (a['position'] as int).compareTo(b['position'] as int));

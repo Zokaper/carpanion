@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -47,7 +48,7 @@ class _QueueTabState extends State<QueueTab> {
 
   void _onYouTubeServiceUpdate() {
     if (socket?.connected == true) {
-      socket!.emit('update_queue', _ytService.currentQueue);
+      socket!.emit('update_queue', jsonEncode(_ytService.currentQueue));
     }
   }
 
@@ -89,7 +90,7 @@ class _QueueTabState extends State<QueueTab> {
     });
 
     socket!.on('request_queue', (_) {
-      socket!.emit('update_queue', _ytService.currentQueue);
+      socket!.emit('update_queue', jsonEncode(_ytService.currentQueue));
     });
 
     socket!.on('request_permissions', (_) {
