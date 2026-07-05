@@ -31,7 +31,7 @@ class _QueueTabState extends State<QueueTab> {
   late DashboardProvider _dashboard;
   Timer? _pollTimer;
   String _lastTrack = '';
-  int _lastValidIndex = -1;
+  int _currentPlayingIndex = -1;
   
   final ScrollController _scrollController = ScrollController();
   bool _userScrolled = false;
@@ -80,16 +80,17 @@ class _QueueTabState extends State<QueueTab> {
         });
 
         if (index != -1) {
-          _lastValidIndex = index;
-        } else if (_lastValidIndex != -1 && _ytService.currentQueue.length > _lastValidIndex + 1) {
-          debugPrint("Auto-Recovery: YT Music fell into endless mode! Forcing playback of next song in queue.");
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Auto-Recovery: Forcing YT Music back to Collab Playlist...')),
-            );
+          _currentPlayingIndex = index;
+        } else {
+          // YT Music track changed to something not in the queue.
+          if (_currentPlayingIndex != -1 && _ytService.currentQueue.length > _currentPlayingIndex + 1) {
+            _currentPlayingIndex++;
+            debugPrint("Auto-DJ: Playing next song at index $_currentPlayingIndex");
+            final nextVideoId = _ytService.currentQueue[_currentPlayingIndex]['videoId'];
+            _playQueueAt(nextVideoId, _currentPlayingIndex);
+          } else if (_currentPlayingIndex != -1 && _ytService.currentQueue.length <= _currentPlayingIndex + 1) {
+            _currentPlayingIndex = -1; // Reached end of queue
           }
-          final nextVideoId = _ytService.currentQueue[_lastValidIndex + 1]['videoId'];
-          _playQueueAt(nextVideoId, _ytService.playlistId!);
         }
       }
 
@@ -156,8 +157,8 @@ class _QueueTabState extends State<QueueTab> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Added to Queue: $title'), duration: const Duration(seconds: 2)),
           );
-          if (!_queueStarted && _ytService.playlistId != null) {
-            _playQueue(_ytService.playlistId!);
+          if (!_queueStarted && _ytService.currentQueue.isNotEmpty) {
+            _playQueue();
           }
         }
       }
@@ -178,33 +179,19 @@ class _QueueTabState extends State<QueueTab> {
           if (action == 'playPause') {
             await FlutterMediaController.togglePlayPause();
           } else if (action == 'next') {
-            // Anti-endless mode throttling: If the currently playing track is right before the newly added tracks,
-            // we ignore the skip to give YouTube Music time to sync the playlist from the cloud.
-            int playingIndex = _ytService.currentQueue.indexWhere((item) {
-              final qTitle = (item['title'] ?? '').toLowerCase();
-              final dTitle = _lastTrack.toLowerCase();
-              return qTitle == dTitle || qTitle.contains(dTitle) || dTitle.contains(qTitle);
-            });
-            
-            if (playingIndex != -1 && _ytService.lastAddedTime != null) {
-              final int syncThreshold = 10; // seconds
-              if (DateTime.now().difference(_ytService.lastAddedTime!).inSeconds < syncThreshold) {
-                // Check if playingIndex is at or after the boundary of old tracks
-                final safeLength = _ytService.currentQueue.length - _ytService.recentlyAddedCount;
-                if (playingIndex >= safeLength - 1) {
-                  debugPrint("Throttling NEXT command to prevent endless mode bug.");
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Syncing queue with cloud... Please wait a few seconds before skipping.'), duration: Duration(seconds: 2)),
-                    );
-                  }
-                  return;
-                }
-              }
+            if (_queueStarted && _currentPlayingIndex != -1 && _ytService.currentQueue.length > _currentPlayingIndex + 1) {
+              _currentPlayingIndex++;
+              _playQueueAt(_ytService.currentQueue[_currentPlayingIndex]['videoId'], _currentPlayingIndex);
+            } else {
+              await FlutterMediaController.nextTrack();
             }
-            await FlutterMediaController.nextTrack();
           } else if (action == 'previous') {
-            await FlutterMediaController.previousTrack();
+            if (_queueStarted && _currentPlayingIndex > 0) {
+              _currentPlayingIndex--;
+              _playQueueAt(_ytService.currentQueue[_currentPlayingIndex]['videoId'], _currentPlayingIndex);
+            } else {
+              await FlutterMediaController.previousTrack();
+            }
           }
         } catch (e) {
           debugPrint("Media action error: $e");
@@ -223,9 +210,9 @@ class _QueueTabState extends State<QueueTab> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Resolved & Added: $query'), duration: const Duration(seconds: 2)),
         );
-        if (!_queueStarted && _ytService.playlistId != null) {
-          _playQueue(_ytService.playlistId!);
-        }
+        if (!_queueStarted && _ytService.currentQueue.isNotEmpty) {
+            _playQueue();
+          }
       }
     });
 
@@ -247,7 +234,7 @@ class _QueueTabState extends State<QueueTab> {
 
     socket!.on('passenger_reorder_song', (data) async {
       if (_allowEditing) {
-        await _ytService.reorderSong(data['playlistItemId'], data['videoId'], data['newPosition']);
+        await _ytService.reorderSong(data['playlistItemId'], data['newPosition']);
       }
     });
 
@@ -266,25 +253,18 @@ class _QueueTabState extends State<QueueTab> {
     super.dispose();
   }
 
-  void _playQueue(String playlistId) {
+  void _playQueue() {
+    if (_ytService.currentQueue.isEmpty) return;
     setState(() {
       _queueStarted = true;
       _showQrCodeOverlay = false;
+      _currentPlayingIndex = 0;
     });
-    final intent = AndroidIntent(
-      action: 'action_view',
-      data: 'https://music.youtube.com/playlist?list=$playlistId',
-      package: 'com.google.android.apps.youtube.music',
-    );
-    intent.launch().catchError((e) {
-      debugPrint("Could not launch YT Music intent: $e");
-    });
-    if (mounted) {
-      Provider.of<DashboardProvider>(context, listen: false).setWaitingForMusic();
-    }
+    _playQueueAt(_ytService.currentQueue[0]['videoId'], 0);
   }
 
-  void _playQueueAt(String videoId, String playlistId) {
+  void _playQueueAt(String videoId, int index) {
+    _currentPlayingIndex = index;
     final intent = AndroidIntent(
       action: 'action_view',
       data: 'https://music.youtube.com/watch?v=$videoId',
@@ -293,6 +273,10 @@ class _QueueTabState extends State<QueueTab> {
     intent.launch().catchError((e) {
       debugPrint("Could not launch targeted YT Music intent: $e");
     });
+    
+    if (mounted) {
+      Provider.of<DashboardProvider>(context, listen: false).setWaitingForMusic();
+    }
     
     // Attempt to automatically pull the Dashboard back to the front after 2 seconds
     Future.delayed(const Duration(seconds: 2), () {
@@ -375,15 +359,15 @@ class _QueueTabState extends State<QueueTab> {
                     const SizedBox(height: 16),
                     if (!_queueStarted)
                       ElevatedButton.icon(
-                        onPressed: ytService.playlistId != null ? () {
+                        onPressed: () {
                           if (ytService.currentQueue.isEmpty) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(content: Text('Please add at least one song to start the collab!')),
                             );
                           } else {
-                            _playQueue(ytService.playlistId!);
+                            _playQueue();
                           }
-                        } : null,
+                        },
                         icon: const Icon(Icons.play_arrow, size: 20),
                         label: const Text("START COLLAB", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                         style: ElevatedButton.styleFrom(

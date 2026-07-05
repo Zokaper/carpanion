@@ -8,18 +8,14 @@ import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sig
 
 class YouTubeService extends ChangeNotifier {
   final GoogleSignIn _googleSignIn = GoogleSignIn(
-    scopes: [
-      youtube.YouTubeApi.youtubeScope,
-    ],
+    scopes: [youtube.YouTubeApi.youtubeScope],
   );
 
   GoogleSignInAccount? _currentUser;
   youtube.YouTubeApi? _youtubeApi;
-  String? _playlistId;
 
   GoogleSignInAccount? get currentUser => _currentUser;
   bool get isSignedIn => _currentUser != null;
-  String? get playlistId => _playlistId;
   
   List<Map<String, dynamic>> currentQueue = [];
   final Map<String, Map<String, String>> _itunesMetadataCache = {};
@@ -28,7 +24,6 @@ class YouTubeService extends ChangeNotifier {
 
   String? lastAddedVideoId;
   DateTime? lastAddedTime;
-  int recentlyAddedCount = 0;
 
   Future<Map<String, String>> _getItunesMetadata(String youtubeTitle, String youtubeChannel, String defaultThumb) async {
     final cacheKey = '$youtubeTitle|$youtubeChannel';
@@ -77,12 +72,9 @@ class YouTubeService extends ChangeNotifier {
     _googleSignIn.onCurrentUserChanged.listen((GoogleSignInAccount? account) async {
       _currentUser = account;
       if (_currentUser != null) {
-        // Authenticate YouTube API
         final authClient = await _googleSignIn.authenticatedClient();
         if (authClient != null) {
           _youtubeApi = youtube.YouTubeApi(authClient);
-          await _ensurePlaylistExists();
-          await fetchQueue();
         }
       }
       notifyListeners();
@@ -102,7 +94,6 @@ class YouTubeService extends ChangeNotifier {
   Future<void> signOut() async {
     await _googleSignIn.disconnect();
     _youtubeApi = null;
-    _playlistId = null;
     notifyListeners();
   }
 
@@ -128,55 +119,7 @@ class YouTubeService extends ChangeNotifier {
     }
   }
 
-  Future<void> _ensurePlaylistExists() async {
-    if (_youtubeApi == null) return;
-    try {
-      await _withAuthRetry(() async {
-        String? nextPageToken;
-        youtube.Playlist? existing;
-        
-        do {
-          final playlists = await _youtubeApi!.playlists.list(
-            ['snippet', 'id'],
-            mine: true,
-            maxResults: 50,
-            pageToken: nextPageToken,
-          );
-
-          existing = playlists.items?.firstWhere(
-            (p) => p.snippet?.title == 'Carpanion Queue',
-            orElse: () => youtube.Playlist(),
-          );
-
-          if (existing != null && existing.id != null) {
-            break;
-          }
-          nextPageToken = playlists.nextPageToken;
-        } while (nextPageToken != null);
-
-        if (existing != null && existing.id != null) {
-          _playlistId = existing.id;
-        } else {
-        // Create new playlist
-        final newPlaylist = youtube.Playlist()
-          ..snippet = (youtube.PlaylistSnippet()
-            ..title = 'Carpanion Queue'
-            ..description = 'Queue created by Carpanion PWA passengers')
-          ..status = (youtube.PlaylistStatus()..privacyStatus = 'unlisted');
-
-        final created = await _youtubeApi!.playlists.insert(newPlaylist, ['snippet', 'status']);
-        _playlistId = created.id;
-      }
-      });
-      notifyListeners();
-    } catch (e) {
-      debugPrint("Error ensuring playlist: $e");
-    }
-  }
-
-  Future<bool> addVideoToPlaylist(String videoId) async {
-    if (_youtubeApi == null || _playlistId == null) return false;
-    
+  Future<bool> addVideoToPlaylist(String videoId, {String title = 'Unknown', String channel = 'YouTube', String thumbnail = ''}) async {
     while (_isAdding) {
       await Future.delayed(const Duration(milliseconds: 500));
     }
@@ -190,38 +133,28 @@ class YouTubeService extends ChangeNotifier {
 
       final existingIndex = currentQueue.indexWhere((item) => item['videoId'] == videoId);
       if (existingIndex != -1) {
-        final playlistItemId = currentQueue[existingIndex]['id'];
-        await _withAuthRetry(() async {
-          await _youtubeApi!.playlistItems.delete(playlistItemId);
-        });
-        // Remove from local queue temporarily so it doesn't mess up state
         currentQueue.removeAt(existingIndex);
       }
 
-      await _withAuthRetry(() async {
-        final item = youtube.PlaylistItem()
-          ..snippet = (youtube.PlaylistItemSnippet()
-            ..playlistId = _playlistId
-            ..resourceId = (youtube.ResourceId()
-              ..kind = 'youtube#video'
-              ..videoId = videoId));
-              
-        await _youtubeApi!.playlistItems.insert(item, ['snippet']);
-      });
-      
-      final now = DateTime.now();
-      if (lastAddedTime != null && now.difference(lastAddedTime!).inSeconds < 10) {
-        recentlyAddedCount++;
-      } else {
-        recentlyAddedCount = 1;
-      }
-      lastAddedTime = now;
+      final meta = await _getItunesMetadata(title, channel, thumbnail);
+
+      final newItem = {
+        'id': DateTime.now().millisecondsSinceEpoch.toString(), // Unique local ID
+        'videoId': videoId,
+        'title': meta['title'],
+        'artist': meta['artist'],
+        'thumbnail': meta['thumbnail'],
+      };
+
+      currentQueue.add(newItem);
+
+      lastAddedTime = DateTime.now();
       lastAddedVideoId = videoId;
       
-      await fetchQueue();
+      notifyListeners();
       return true;
     } catch (e) {
-      debugPrint("Error adding video to playlist: $e");
+      debugPrint("Error adding video to local queue: $e");
       return false;
     } finally {
       _isAdding = false;
@@ -229,97 +162,26 @@ class YouTubeService extends ChangeNotifier {
   }
 
   Future<void> clearPlaylist() async {
-    if (_youtubeApi == null || _playlistId == null) return;
-    
-    // Create a copy of current items to avoid concurrent modification issues
-    final itemsToDelete = List<Map<String, dynamic>>.from(currentQueue);
-    
-    for (var item in itemsToDelete) {
-      try {
-        await _withAuthRetry(() async {
-          await _youtubeApi!.playlistItems.delete(item['id']);
-        });
-        // Throttle deletes to avoid rate limiting
-        await Future.delayed(const Duration(milliseconds: 150));
-      } catch (e) {
-        debugPrint("Error deleting item ${item['id']}: $e");
-      }
-    }
-    await fetchQueue();
+    currentQueue.clear();
+    notifyListeners();
   }
 
   Future<void> fetchQueue() async {
-    if (_youtubeApi == null || _playlistId == null) return;
-    try {
-      await _withAuthRetry(() async {
-        final items = await _youtubeApi!.playlistItems.list(
-          ['snippet', 'contentDetails'], 
-          playlistId: _playlistId, 
-          maxResults: 50
-        );
-        
-        final mappedItems = items.items?.map((item) {
-          return {
-            'id': item.id ?? '',
-            'videoId': item.snippet?.resourceId?.videoId ?? '',
-            'rawTitle': item.snippet?.title ?? 'Unknown',
-            'rawChannel': item.snippet?.videoOwnerChannelTitle ?? item.snippet?.channelTitle ?? '',
-            'rawThumbnail': item.snippet?.thumbnails?.default_?.url ?? '',
-            'position': item.snippet?.position ?? 0,
-          };
-        }).toList() ?? [];
-
-        mappedItems.sort((a, b) => (a['position'] as int).compareTo(b['position'] as int));
-
-        List<Map<String, dynamic>> enrichedItems = [];
-        for (var item in mappedItems) {
-          final meta = await _getItunesMetadata(item['rawTitle'] as String, item['rawChannel'] as String, item['rawThumbnail'] as String);
-          enrichedItems.add({
-            ...item,
-            'title': meta['title'],
-            'artist': meta['artist'],
-            'thumbnail': meta['thumbnail'],
-          });
-          // Slight delay to prevent hitting the iTunes API rate limit
-          await Future.delayed(const Duration(milliseconds: 200));
-        }
-        
-        currentQueue = enrichedItems;
-        currentQueue.sort((a, b) => (a['position'] as int).compareTo(b['position'] as int));
-      });
-      notifyListeners();
-    } catch (e) {
-      debugPrint("Error fetching queue: $e");
-    }
+    // No longer an API fetch, just notify listeners of local state.
+    notifyListeners();
   }
 
   Future<void> deleteSong(String playlistItemId) async {
-    if (_youtubeApi == null) return;
-    try {
-      await _withAuthRetry(() async {
-        await _youtubeApi!.playlistItems.delete(playlistItemId);
-      });
-      await fetchQueue();
-    } catch (e) {
-      debugPrint("Error deleting song: $e");
-    }
+    currentQueue.removeWhere((item) => item['id'] == playlistItemId);
+    notifyListeners();
   }
 
   Future<void> reorderSong(String playlistItemId, String videoId, int newPosition) async {
-    if (_youtubeApi == null || _playlistId == null) return;
-    try {
-      await _withAuthRetry(() async {
-        final item = youtube.PlaylistItem()
-          ..id = playlistItemId
-          ..snippet = (youtube.PlaylistItemSnippet()
-            ..playlistId = _playlistId
-            ..resourceId = (youtube.ResourceId()..kind = 'youtube#video'..videoId = videoId)
-            ..position = newPosition);
-        await _youtubeApi!.playlistItems.update(item, ['snippet']);
-      });
-      await fetchQueue();
-    } catch (e) {
-      debugPrint("Error reordering song: $e");
+    final index = currentQueue.indexWhere((item) => item['id'] == playlistItemId);
+    if (index != -1) {
+      final item = currentQueue.removeAt(index);
+      currentQueue.insert(newPosition.clamp(0, currentQueue.length), item);
+      notifyListeners();
     }
   }
 
@@ -327,7 +189,13 @@ class YouTubeService extends ChangeNotifier {
     try {
       final res = await searchSongs('$query official audio');
       if (res.isNotEmpty) {
-        return await addVideoToPlaylist(res.first['videoId']);
+        final item = res.first;
+        return await addVideoToPlaylist(
+          item['videoId'], 
+          title: item['title'], 
+          channel: item['channel'], 
+          thumbnail: item['thumbnail']
+        );
       }
       return false;
     } catch (e) {
