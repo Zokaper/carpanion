@@ -1,0 +1,185 @@
+import 'dart:math';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'package:android_intent_plus/android_intent.dart';
+import '../services/youtube_service.dart';
+
+class QueueTab extends StatefulWidget {
+  const QueueTab({super.key});
+
+  @override
+  State<QueueTab> createState() => _QueueTabState();
+}
+
+class _QueueTabState extends State<QueueTab> {
+  final String backendUrl = "https://carpanion-queue.example.com";
+  late String sessionId;
+  IO.Socket? socket;
+  final List<String> _recentlyAdded = [];
+
+  @override
+  void initState() {
+    super.initState();
+    sessionId = _generateSessionId();
+    _connectSocket();
+  }
+
+  String _generateSessionId() {
+    final rand = Random();
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    return List.generate(6, (index) => chars[rand.nextInt(chars.length)]).join();
+  }
+
+  void _connectSocket() {
+    socket = IO.io(backendUrl, IO.OptionBuilder()
+      .setTransports(['websocket'])
+      .disableAutoConnect()
+      .build()
+    );
+
+    socket!.connect();
+
+    socket!.onConnect((_) {
+      debugPrint("Connected to backend, registering session: $sessionId");
+      socket!.emit('register_session', sessionId);
+    });
+
+    socket!.on('add_song', (data) async {
+      debugPrint("Received add_song event: $data");
+      final ytService = Provider.of<YouTubeService>(context, listen: false);
+      if (data['videoId'] != null) {
+        final title = data['title'] ?? 'Unknown Song';
+        final success = await ytService.addVideoToPlaylist(data['videoId']);
+        if (success && mounted) {
+          setState(() {
+            _recentlyAdded.insert(0, title);
+            if (_recentlyAdded.length > 5) _recentlyAdded.removeLast();
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Added to Queue: $title'), duration: const Duration(seconds: 2)),
+          );
+        }
+      }
+    });
+
+    socket!.onDisconnect((_) => debugPrint('Disconnected from backend'));
+  }
+
+  @override
+  void dispose() {
+    socket?.disconnect();
+    super.dispose();
+  }
+
+  void _playQueue(String playlistId) {
+    final intent = AndroidIntent(
+      action: 'action_view',
+      data: 'https://music.youtube.com/playlist?list=$playlistId',
+      package: 'com.google.android.apps.youtube.music',
+    );
+    intent.launch().catchError((e) {
+      debugPrint("Could not launch YT Music intent: $e");
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ytService = Provider.of<YouTubeService>(context);
+    final theme = Theme.of(context);
+    final onSurface = theme.colorScheme.onSurface;
+
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        children: [
+          Text(
+            "PASSENGER QUEUE",
+            style: TextStyle(
+              color: onSurface.withOpacity(0.6),
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1.5,
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (!ytService.isSignedIn)
+            Expanded(
+              child: Center(
+                child: ElevatedButton.icon(
+                  onPressed: ytService.signIn,
+                  icon: const Icon(Icons.login),
+                  label: const Text("Sign in with Google"),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  ),
+                ),
+              ),
+            )
+          else ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: QrImageView(
+                data: '$backendUrl/?session=$sessionId',
+                version: QrVersions.auto,
+                size: 160.0,
+                backgroundColor: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              "Session: $sessionId",
+              style: TextStyle(
+                color: onSurface,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              "Scan to add songs to the queue",
+              style: TextStyle(color: onSurface.withOpacity(0.7)),
+            ),
+            const Spacer(),
+            if (_recentlyAdded.isNotEmpty) ...[
+              Text(
+                "Recently Added",
+                style: TextStyle(
+                  color: onSurface.withOpacity(0.6),
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.5,
+                ),
+              ),
+              const SizedBox(height: 8),
+              ..._recentlyAdded.map((song) => Text(
+                song,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: onSurface, fontSize: 14),
+              )),
+              const Spacer(),
+            ],
+            ElevatedButton.icon(
+              onPressed: ytService.playlistId != null 
+                  ? () => _playQueue(ytService.playlistId!) 
+                  : null,
+              icon: const Icon(Icons.play_arrow),
+              label: const Text("PLAY QUEUE"),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: theme.colorScheme.primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+              ),
+            ),
+          ]
+        ],
+      ),
+    );
+  }
+}

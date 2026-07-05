@@ -17,6 +17,7 @@ import 'ui/settings_dialog.dart';
 import 'ui/sidebar_tabs.dart';
 import 'ui/phone_tab.dart';
 import 'package:share_handler/share_handler.dart';
+import 'services/youtube_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -35,6 +36,7 @@ void main() {
       providers: [
         ChangeNotifierProvider(create: (_) => DashboardProvider()..initialize()),
         ChangeNotifierProvider(create: (_) => DynamicThemeProvider()),
+        ChangeNotifierProvider(create: (_) => YouTubeService()),
       ],
       child: const MyApp(),
     ),

@@ -1,0 +1,94 @@
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const axios = require('axios');
+const path = require('path');
+const cookieParser = require('cookie-parser');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+  }
+});
+
+app.use(cors());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+app.use(cookieParser());
+
+// Serve static files for PWA
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Store active car sessions
+// Map<sessionId, socketId>
+const activeSessions = new Map();
+
+io.on('connection', (socket) => {
+  console.log('Client connected:', socket.id);
+
+  socket.on('register_session', (sessionId) => {
+    console.log(`Session ${sessionId} registered by socket ${socket.id}`);
+    activeSessions.set(sessionId, socket.id);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Client disconnected:', socket.id);
+    for (const [sessionId, sockId] of activeSessions.entries()) {
+      if (sockId === socket.id) {
+        activeSessions.delete(sessionId);
+        break;
+      }
+    }
+  });
+});
+
+// Endpoint for PWA Share Target
+app.post('/share', async (req, res) => {
+  try {
+    const { title, text, url } = req.body;
+    const session = req.cookies.session;
+    const sharedUrl = url || text;
+    
+    if (!sharedUrl) {
+      return res.redirect('/?error=no_url');
+    }
+
+    if (!session || !activeSessions.has(session)) {
+      return res.redirect('/?error=invalid_session');
+    }
+
+    // Convert link using Odesli
+    const odesliResponse = await axios.get(`https://api.song.link/v1-alpha.1/links?url=${encodeURIComponent(sharedUrl)}`);
+    const data = odesliResponse.data;
+    
+    // Find YouTube video ID
+    let ytVideoId = null;
+    if (data.linksByPlatform && data.linksByPlatform.youtube) {
+      const ytUrl = data.linksByPlatform.youtube.url;
+      // Extract video ID from youtube url (e.g. https://youtube.com/watch?v=VIDEO_ID)
+      const match = ytUrl.match(/[?&]v=([^&]+)/);
+      if (match) {
+        ytVideoId = match[1];
+      }
+    }
+
+    if (ytVideoId) {
+      const socketId = activeSessions.get(session);
+      io.to(socketId).emit('add_song', { videoId: ytVideoId, title: title || '' });
+      return res.redirect('/?success=1');
+    } else {
+      return res.redirect('/?error=not_found_on_youtube');
+    }
+  } catch (error) {
+    console.error('Share error:', error.message);
+    return res.redirect('/?error=conversion_failed');
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});

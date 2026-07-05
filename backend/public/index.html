@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Carpanion Queue</title>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    body {
+      background-color: #121212;
+      color: #ffffff;
+      font-family: 'Inter', sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      text-align: center;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+    h1 { margin-bottom: 10px; }
+    p { color: #aaaaaa; }
+    #status { margin-top: 20px; font-weight: bold; }
+    .success { color: #1DB954; }
+    .error { color: #ff5252; }
+    button {
+      margin-top: 20px;
+      padding: 10px 20px;
+      background-color: #1DB954;
+      color: #000;
+      border: none;
+      border-radius: 20px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>Carpanion Queue</h1>
+  <p id="message">Loading session...</p>
+  <div id="status"></div>
+  <button id="installBtn" style="display: none;">Install App</button>
+
+  <script src="app.js"></script>
+</body>
+</html>
