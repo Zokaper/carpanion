@@ -16,8 +16,11 @@ import 'package:flutter_contacts/flutter_contacts.dart';
 import 'ui/settings_dialog.dart';
 import 'ui/sidebar_tabs.dart';
 import 'ui/phone_tab.dart';
+import 'ui/welcome_overlay.dart';
 import 'package:share_handler/share_handler.dart';
 import 'services/youtube_service.dart';
+import 'dart:math' as math;
+import 'ui/queue_tab.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -67,6 +70,54 @@ class DashboardProvider with ChangeNotifier {
   bool _serviceEnabled = false;
   String _errorMessage = '';
 
+  bool _showWelcomeUI = false;
+  bool get showWelcomeUI => _showWelcomeUI;
+
+  void dismissWelcomeUI() {
+    _showWelcomeUI = false;
+    updateLastActiveTime();
+    notifyListeners();
+  }
+
+  void forceShowWelcomeUI() {
+    _showWelcomeUI = true;
+    notifyListeners();
+  }
+
+  Future<void> updateLastActiveTime() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('lastActiveTime', DateTime.now().millisecondsSinceEpoch);
+  }
+
+  Future<void> checkNewDrive() async {
+    final prefs = await SharedPreferences.getInstance();
+    final lastTime = prefs.getInt('lastActiveTime');
+    bool shouldShow = false;
+
+    if (lastTime != null) {
+      final lastActiveDate = DateTime.fromMillisecondsSinceEpoch(lastTime);
+      final diff = DateTime.now().difference(lastActiveDate);
+      if (diff.inMinutes >= 10) {
+        bool isNavigating = false;
+        try {
+          isNavigating = await platform.invokeMethod<bool>('isNavigating') ?? false;
+        } catch (e) {}
+
+        if (!_isPlaying && !isNavigating && _speed < 1.39) {
+          shouldShow = true;
+        }
+      }
+    } else {
+      shouldShow = true;
+    }
+
+    _showWelcomeUI = shouldShow;
+    if (!shouldShow) {
+      updateLastActiveTime();
+    }
+    notifyListeners();
+  }
+
   // Favorites state variables
   List<Map<String, String>> _favorites = [
     {'title': 'My Supermix', 'url': 'My Supermix'},
@@ -98,6 +149,7 @@ class DashboardProvider with ChangeNotifier {
   String _speedLimit = '?';
   Position? _lastSpeedLimitPosition;
   double _speed = 0.0;
+  double _accuracy = 0.0;
   double _altitude = 0.0;
   double _heading = 0.0;
   String _streetName = 'Scanning...';
@@ -108,6 +160,7 @@ class DashboardProvider with ChangeNotifier {
 
   bool get isKmph => _isKmph;
   double get speed => _speed;
+  double get accuracy => _accuracy;
   double get altitude => _altitude;
   double get heading => _heading;
   String get streetName => _streetName;
@@ -123,6 +176,58 @@ class DashboardProvider with ChangeNotifier {
   String get callName => _callName;
   int get callDurationSeconds => _callDurationSeconds;
   bool get hasPhonePermissions => _hasPhonePermissions;
+
+  bool _isWifi = false;
+  int _wifiBars = 0;
+  bool _isCellular = false;
+  int _cellularBars = 0;
+
+  bool get isWifi => _isWifi;
+  int get wifiBars => _wifiBars;
+  bool get isCellular => _isCellular;
+  int get cellularBars => _cellularBars;
+
+  int _ringerMode = 2; // 0=Silent, 1=Vibrate, 2=Normal
+  int get ringerMode => _ringerMode;
+
+  Future<void> toggleRingerMode() async {
+    int newMode = (_ringerMode + 1) % 3;
+    try {
+      final success = await platform.invokeMethod<bool>('setRingerMode', {'mode': newMode});
+      if (success == true) {
+        _ringerMode = newMode;
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint("Failed to set ringer mode: $e");
+    }
+  }
+
+  int _brightness = 128; // 0-255
+  bool _isAdaptiveBrightness = true;
+
+  int get brightness => _brightness;
+  bool get isAdaptiveBrightness => _isAdaptiveBrightness;
+
+  Future<void> setBrightness(int value) async {
+    _brightness = value;
+    notifyListeners();
+    try {
+      await platform.invokeMethod('setSystemBrightness', {'brightness': value});
+    } catch (e) {
+      debugPrint("Failed to set brightness: $e");
+    }
+  }
+
+  Future<void> toggleAdaptiveBrightness() async {
+    _isAdaptiveBrightness = !_isAdaptiveBrightness;
+    notifyListeners();
+    try {
+      await platform.invokeMethod('setSystemBrightness', {'adaptive': _isAdaptiveBrightness});
+    } catch (e) {
+      debugPrint("Failed to toggle adaptive brightness: $e");
+    }
+  }
   
   bool get dashcamRecording => _dashcamRecording;
   String get speedLimit => _speedLimit;
@@ -153,6 +258,8 @@ class DashboardProvider with ChangeNotifier {
   }
 
   Timer? _mediaTimer;
+  Timer? _dashcamTimer;
+  Timer? _networkTimer;
 
   void toggleUnit() {
     _isKmph = !_isKmph;
@@ -166,8 +273,18 @@ class DashboardProvider with ChangeNotifier {
     if (_isDemoMode) {
        _speed = 0.0;
        _demoTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
-          _speed += 0.5; // slow acceleration
-          if (_speed > 40.0) _speed = 40.0; // max ~144 km/h
+          if (timer.tick <= 30) {
+            // First 3 seconds: accelerate from 0 to 125 km/h
+            _speed += (125.0 / 3.6) / 30.0;
+          } else {
+            // Fluctuate speed smoothly using a sine wave around 125 km/h
+            double wave = math.sin((timer.tick - 30) * 0.05);
+            double speedKmph = 125.0 + (wave * 10.0);
+            _speed = speedKmph / 3.6; // convert to m/s
+          }
+          
+          _speedLimit = "120"; // Force 120 limit
+          _accuracy = 4.5;
           _altitude = 650.0 + _speed;
           _heading = (_heading + 1.5) % 360;
           _streetName = "King Fahd Road";
@@ -177,6 +294,9 @@ class DashboardProvider with ChangeNotifier {
     } else {
        _demoTimer?.cancel();
        _speed = 0.0;
+       _speedLimit = '?';
+       _streetName = 'Scanning...';
+       _accuracy = 0.0;
        checkLocationSettingsAndPermissions();
     }
     notifyListeners();
@@ -213,11 +333,13 @@ class DashboardProvider with ChangeNotifier {
   StreamSubscription<Position>? _positionStreamSubscription;
 
   Future<void> initialize() async {
+    await checkNewDrive();
     checkPermissions();
     await checkLocationSettingsAndPermissions();
     _startLocationUpdates();
     _startMediaPolling();
     _startDashcamPolling();
+    _startNetworkPolling();
     
     await loadFavorites();
     initShareHandler();
@@ -297,6 +419,8 @@ class DashboardProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  List<Contact>? _cachedContacts;
+
   Future<String> _resolveContactName(String number) async {
     try {
       final cleanNumber = number.replaceAll(RegExp(r'\D'), '');
@@ -307,8 +431,11 @@ class DashboardProvider with ChangeNotifier {
         return number.isNotEmpty ? number : 'Unknown Caller';
       }
       
-      final contacts = await FlutterContacts.getAll(properties: ContactProperties.all);
-      for (final contact in contacts) {
+      if (_cachedContacts == null) {
+        _cachedContacts = await FlutterContacts.getAll(properties: ContactProperties.allProperties);
+      }
+      
+      for (final contact in _cachedContacts!) {
         for (final phone in contact.phones) {
           final cleanPhone = phone.number.replaceAll(RegExp(r'\D'), '');
           
@@ -411,6 +538,7 @@ class DashboardProvider with ChangeNotifier {
     ).listen((Position position) {
       if (!_isDemoMode) {
         _speed = position.speed;
+        _accuracy = position.accuracy;
         if (_speed < 0) _speed = 0;
         _altitude = position.altitude;
         _heading = position.heading;
@@ -426,8 +554,13 @@ class DashboardProvider with ChangeNotifier {
     });
   }
   
+  bool _isFetchingDashcam = false;
+  
   void _startDashcamPolling() {
-    Timer.periodic(const Duration(seconds: 2), (_) async {
+    _dashcamTimer?.cancel();
+    _dashcamTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      if (_isFetchingDashcam) return;
+      _isFetchingDashcam = true;
       try {
         final isRecording = await platform.invokeMethod<bool>('getDashcamStatus');
         if (isRecording != null && isRecording != _dashcamRecording) {
@@ -435,12 +568,86 @@ class DashboardProvider with ChangeNotifier {
            notifyListeners();
         }
       } catch (e) {
-        // Ignored
+        debugPrint("Dashcam polling error: $e");
+      } finally {
+        _isFetchingDashcam = false;
       }
     });
   }
   
+  Future<void> stopDashcam() async {
+    try {
+      await platform.invokeMethod('stopDashcam');
+      _dashcamRecording = false;
+      notifyListeners();
+    } catch (e) {
+      debugPrint("Stop dashcam failed: $e");
+    }
+  }
+
+  bool _isFetchingNetwork = false;
+
+  void _startNetworkPolling() {
+    _networkTimer?.cancel();
+    _networkTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+      if (_isDemoMode) {
+        _isWifi = true;
+        _wifiBars = 4;
+        _isCellular = true;
+        _cellularBars = 4;
+        return;
+      }
+      if (_isFetchingNetwork) return;
+      _isFetchingNetwork = true;
+      try {
+        final Map<dynamic, dynamic>? status = await platform.invokeMethod('getNetworkStatus');
+        if (status != null) {
+          bool changed = false;
+          final bool w = status['isWifi'] ?? false;
+          final int wb = status['wifiBars'] ?? 0;
+          final bool c = status['isCellular'] ?? false;
+          final int cb = status['cellularBars'] ?? 0;
+
+          if (_isWifi != w || _wifiBars != wb || _isCellular != c || _cellularBars != cb) {
+            _isWifi = w;
+            _wifiBars = wb;
+            _isCellular = c;
+            _cellularBars = cb;
+            changed = true;
+          }
+
+          final int? rMode = await platform.invokeMethod<int>('getRingerMode');
+          if (rMode != null && rMode != _ringerMode) {
+            _ringerMode = rMode;
+            changed = true;
+          }
+
+          final Map<dynamic, dynamic>? bInfo = await platform.invokeMethod('getBrightnessInfo');
+          if (bInfo != null) {
+            final int b = bInfo['brightness'] as int? ?? 128;
+            final bool a = bInfo['adaptive'] as bool? ?? true;
+            if (_brightness != b || _isAdaptiveBrightness != a) {
+              _brightness = b;
+              _isAdaptiveBrightness = a;
+              changed = true;
+            }
+          }
+
+          if (changed) notifyListeners();
+        }
+      } catch (e) {
+        debugPrint("Network polling error: $e");
+      } finally {
+        _isFetchingNetwork = false;
+      }
+    });
+  }
+
+  bool _isFetchingStreetName = false;
+
   Future<void> _fetchStreetName(Position position) async {
+     if (_isFetchingStreetName) return;
+     _isFetchingStreetName = true;
      try {
         final url = Uri.parse('https://nominatim.openstreetmap.org/reverse?format=json&lat=${position.latitude}&lon=${position.longitude}&zoom=18&addressdetails=1');
         final response = await http.get(url, headers: {'User-Agent': 'CarDashboardApp/1.0'}).timeout(const Duration(seconds: 5));
@@ -455,15 +662,21 @@ class DashboardProvider with ChangeNotifier {
            }
         }
      } catch (e) {
-        // Ignored
+        debugPrint("Street name fetch error: $e");
+     } finally {
+        _isFetchingStreetName = false;
      }
   }
 
+  bool _isFetchingSpeedLimit = false;
+
   Future<void> _fetchSpeedLimit(Position position) async {
+     if (_isFetchingSpeedLimit) return;
+     _isFetchingSpeedLimit = true;
      try {
         final lat = position.latitude;
         final lon = position.longitude;
-        final query = '[out:json];way(around:30,$lat,$lon)["maxspeed"]["highway"!="service"];out tags;';
+        final query = '[out:json];way(around:10,$lat,$lon)["maxspeed"]["highway"!="service"];out tags;';
         final url = Uri.parse('https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(query)}');
         
         final response = await http.get(url, headers: {'User-Agent': 'CarDashboardApp/1.0'}).timeout(const Duration(seconds: 5));
@@ -486,6 +699,8 @@ class DashboardProvider with ChangeNotifier {
         }
      } catch (e) {
         debugPrint("Speed limit fetch failed: $e");
+     } finally {
+        _isFetchingSpeedLimit = false;
      }
   }
 
@@ -591,8 +806,12 @@ class DashboardProvider with ChangeNotifier {
   @override
   void dispose() {
     _mediaTimer?.cancel();
+    _dashcamTimer?.cancel();
+    _networkTimer?.cancel();
+    _callDurationTimer?.cancel();
     _positionStreamSubscription?.cancel();
     _demoTimer?.cancel();
+    _shareSubscription?.cancel();
     super.dispose();
   }
 
@@ -733,7 +952,7 @@ class DashboardProvider with ChangeNotifier {
                if (finalTitle.isNotEmpty && finalTitle != "YouTube") {
                  // Update asynchronously
                  for (int i = 0; i < _favorites.length; i++) {
-                   if (_favorites[i]['url'] == url) {
+                   if (_favorites[i]['url'] == url && _favorites[i]['title'] == "Loading...") {
                      _favorites[i]['title'] = finalTitle.length > 40 ? "${finalTitle.substring(0, 37)}..." : finalTitle;
                      _favorites[i]['subtitle'] = finalSubtitle;
                      saveFavorites();
@@ -741,7 +960,7 @@ class DashboardProvider with ChangeNotifier {
                      break;
                    }
                  }
-                 if (_pendingSharedFavorite != null && _pendingSharedFavorite!['url'] == url) {
+                 if (_pendingSharedFavorite != null && _pendingSharedFavorite!['url'] == url && _pendingSharedFavorite!['title'] == "Loading...") {
                    _pendingSharedFavorite!['title'] = finalTitle.length > 40 ? "${finalTitle.substring(0, 37)}..." : finalTitle;
                    _pendingSharedFavorite!['subtitle'] = finalSubtitle;
                    notifyListeners();
@@ -753,7 +972,7 @@ class DashboardProvider with ChangeNotifier {
       } catch (e) {
          debugPrint("Failed to fetch title for URL: $e");
          for (int i = 0; i < _favorites.length; i++) {
-           if (_favorites[i]['url'] == url) {
+           if (_favorites[i]['url'] == url && _favorites[i]['title'] == "Loading...") {
              _favorites[i]['title'] = "Shared Link";
              saveFavorites();
              notifyListeners();
@@ -814,15 +1033,19 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       Provider.of<DashboardProvider>(context, listen: false).checkPermissions();
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      Provider.of<DashboardProvider>(context, listen: false).updateLastActiveTime();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final provider = Provider.of<DashboardProvider>(context);
+    final provider = Provider.of<DashboardProvider>(context, listen: false);
 
     return Scaffold(
-      body: SafeArea(
+      body: Stack(
+        children: [
+          SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
           child: Column(
@@ -832,37 +1055,43 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               const SizedBox(height: 10),
               
               // Warning banner if permissions/services are missing
-              if (provider.errorMessage.isNotEmpty && !provider.isDemoMode)
-                Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFF3D00).withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0xFFFF3D00).withOpacity(0.3)),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.warning_amber_rounded, color: Color(0xFFFF3D00), size: 20),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          provider.errorMessage,
-                          style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
-                        ),
+              Consumer<DashboardProvider>(
+                builder: (context, prov, child) {
+                  if (prov.errorMessage.isNotEmpty && !prov.isDemoMode) {
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFF3D00).withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFFF3D00).withOpacity(0.3)),
                       ),
-                      TextButton(
-                        onPressed: provider.checkLocationSettingsAndPermissions,
-                        child: const Text("RETRY", style: TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold)),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.warning_amber_rounded, color: Color(0xFFFF3D00), size: 20),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              prov.errorMessage,
+                              style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: prov.checkLocationSettingsAndPermissions,
+                            child: const Text("RETRY", style: TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold)),
+                          ),
+                          const SizedBox(width: 8),
+                          TextButton(
+                            onPressed: prov.toggleDemoMode,
+                            child: const Text("USE DEMO MODE", style: TextStyle(color: Colors.white70)),
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 8),
-                      TextButton(
-                        onPressed: provider.toggleDemoMode,
-                        child: const Text("USE DEMO MODE", style: TextStyle(color: Colors.white70)),
-                      ),
-                    ],
-                  ),
-                ),
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
+              ),
 
               // Main columns: Speed (7), Media Controls (8), Favorites Sidebar (6)
               Expanded(
@@ -879,14 +1108,18 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                     // Center Column: Media Control Panel or Call Screen
                     Expanded(
                       flex: 8,
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 300),
-                        transitionBuilder: (Widget child, Animation<double> animation) {
-                          return FadeTransition(opacity: animation, child: child);
+                      child: Consumer<DashboardProvider>(
+                        builder: (context, prov, child) {
+                          return AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 300),
+                            transitionBuilder: (Widget child, Animation<double> animation) {
+                              return FadeTransition(opacity: animation, child: child);
+                            },
+                            child: prov.callState != 'IDLE' 
+                                ? const CallScreenWidget(key: ValueKey('call_screen')) 
+                                : const MediaControlPanel(key: ValueKey('media_panel')),
+                          );
                         },
-                        child: provider.callState != 'IDLE' 
-                            ? const CallScreenWidget(key: ValueKey('call_screen')) 
-                            : const MediaControlPanel(key: ValueKey('media_panel')),
                       ),
                     ),
                     const SizedBox(width: 14),
@@ -903,15 +1136,39 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           ),
         ),
       ),
+          Consumer<DashboardProvider>(
+            builder: (context, prov, child) {
+              if (prov.showWelcomeUI) {
+                return const WelcomeOverlayWidget();
+              }
+              return const SizedBox.shrink();
+            },
+          ),
+        ],
+      ),
     );
   }
 }
 
 // ----------------------------------------------------------------------------
-// HEADER BAR WIDGET
+// CLOCK WIDGET
 // ----------------------------------------------------------------------------
-class HeaderBarWidget extends StatelessWidget {
-  const HeaderBarWidget({super.key});
+class ClockWidget extends StatefulWidget {
+  final Color color;
+  const ClockWidget({super.key, required this.color});
+
+  @override
+  State<ClockWidget> createState() => _ClockWidgetState();
+}
+
+class _ClockWidgetState extends State<ClockWidget> {
+  late Stream<DateTime> _clockStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _clockStream = Stream.periodic(const Duration(seconds: 1), (_) => DateTime.now()).asBroadcastStream();
+  }
 
   String _getMonthName(int month) {
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -933,19 +1190,66 @@ class HeaderBarWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final provider = Provider.of<DashboardProvider>(context);
+    return StreamBuilder<DateTime>(
+      stream: _clockStream,
+      initialData: DateTime.now(),
+      builder: (context, snapshot) {
+        final now = snapshot.data ?? DateTime.now();
+        return Row(
+          children: [
+            Text(
+              _formatTime(now),
+              style: TextStyle(
+                color: widget.color,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.5,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+            const SizedBox(width: 10),
+            Container(width: 1, height: 12, color: widget.color.withOpacity(0.24)),
+            const SizedBox(width: 10),
+            Text(
+              "${_getWeekdayName(now.weekday)}, ${_getMonthName(now.month)} ${now.day}",
+              style: TextStyle(
+                color: widget.color.withOpacity(0.6),
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// ----------------------------------------------------------------------------
+// HEADER BAR WIDGET
+// ----------------------------------------------------------------------------
+class HeaderBarWidget extends StatelessWidget {
+  const HeaderBarWidget({super.key});
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
+    final provider = Provider.of<DashboardProvider>(context);
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: onSurface.withOpacity(0.05)),
+      ),
       child: Row(
         children: [
-          // Left Column Header (Flex 7): App Title & Time
+          // Left Column Header (Flex 7): Speed/Clock
           Expanded(
             flex: 7,
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Row(
                   children: [
@@ -953,38 +1257,7 @@ class HeaderBarWidget extends StatelessWidget {
                     const SizedBox(width: 12),
                   ],
                 ),
-                StreamBuilder<DateTime>(
-                  stream: Stream.periodic(const Duration(seconds: 1), (_) => DateTime.now()),
-                  initialData: DateTime.now(),
-                  builder: (context, snapshot) {
-                    final now = snapshot.data ?? DateTime.now();
-                    return Row(
-                      children: [
-                        Text(
-                          _formatTime(now),
-                          style: TextStyle(
-                            color: onSurface,
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 0.5,
-                            fontFeatures: const [FontFeature.tabularFigures()],
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Container(width: 1, height: 12, color: onSurface.withOpacity(0.24)),
-                        const SizedBox(width: 10),
-                        Text(
-                          "${_getWeekdayName(now.weekday)}, ${_getMonthName(now.month)} ${now.day}",
-                          style: TextStyle(
-                            color: onSurface.withOpacity(0.6),
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
+                ClockWidget(color: onSurface),
               ],
             ),
           ),
@@ -993,25 +1266,107 @@ class HeaderBarWidget extends StatelessWidget {
           // Center Column Header (Flex 8): Settings
           Expanded(
             flex: 8,
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: GestureDetector(
-                onTap: () {
-                  showDialog(
-                    context: context,
-                    builder: (context) => const SettingsDialog(),
-                  );
-                },
-                child: Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: onSurface.withOpacity(0.04),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: onSurface.withOpacity(0.08)),
+            child: Row(
+              mainAxisSize: MainAxisSize.max,
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                // Brightness Slider
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                    child: ThickBrightnessSlider(
+                      brightness: provider.brightness,
+                      isAdaptive: provider.isAdaptiveBrightness,
+                      onChanged: (val) => provider.setBrightness(val),
+                      onToggleAdaptive: () => provider.toggleAdaptiveBrightness(),
+                      activeColor: theme.colorScheme.primary,
+                      backgroundColor: onSurface.withOpacity(0.1),
+                      iconColor: onSurface.withOpacity(0.8),
+                    ),
                   ),
-                  child: Icon(Icons.settings, color: onSurface.withOpacity(0.6), size: 16),
                 ),
-              ),
+                Container(width: 1, height: 16, color: onSurface.withOpacity(0.24)),
+                const SizedBox(width: 8),
+                // Status Bar Icons
+                GestureDetector(
+                  onTap: () => provider.toggleRingerMode(),
+                  behavior: HitTestBehavior.opaque,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4.0),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (provider.isWifi) ...[
+                          Icon(
+                            provider.wifiBars == 0 ? Icons.signal_wifi_0_bar :
+                            provider.wifiBars == 1 ? Icons.network_wifi_1_bar :
+                            provider.wifiBars == 2 ? Icons.network_wifi_2_bar :
+                            provider.wifiBars == 3 ? Icons.network_wifi_3_bar :
+                            Icons.wifi, 
+                            color: onSurface.withOpacity(0.8), 
+                            size: 18
+                          ),
+                          const SizedBox(width: 8),
+                        ],
+                        if (provider.isCellular || !provider.isWifi) ...[
+                          if (!provider.isCellular)
+                            Icon(Icons.signal_cellular_off, color: onSurface.withOpacity(0.8), size: 18)
+                          else
+                            CellularIconWidget(
+                              bars: provider.cellularBars,
+                              color: onSurface.withOpacity(0.8),
+                              size: 18,
+                            ),
+                          const SizedBox(width: 8),
+                        ],
+                        Icon(
+                          provider.ringerMode == 0 ? Icons.volume_off :
+                          provider.ringerMode == 1 ? Icons.vibration :
+                          Icons.volume_up, 
+                          color: onSurface.withOpacity(0.8), 
+                          size: 18
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(width: 1, height: 16, color: onSurface.withOpacity(0.24)),
+                const SizedBox(width: 8),
+                
+                GestureDetector(
+                  onTap: () {
+                    Provider.of<DashboardProvider>(context, listen: false).forceShowWelcomeUI();
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: onSurface.withOpacity(0.04),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: onSurface.withOpacity(0.08)),
+                    ),
+                    child: Icon(Icons.drive_eta, color: onSurface.withOpacity(0.6), size: 16),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: () {
+                    showDialog(
+                      context: context,
+                      builder: (context) => const SettingsDialog(),
+                    );
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: onSurface.withOpacity(0.04),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: onSurface.withOpacity(0.08)),
+                    ),
+                    child: Icon(Icons.settings, color: onSurface.withOpacity(0.6), size: 16),
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(width: 14),
@@ -1360,6 +1715,8 @@ class FavoritesSidebar extends StatefulWidget {
 }
 
 class _FavoritesSidebarState extends State<FavoritesSidebar> {
+  bool _showQueue = false;
+
   void _editFavorites() {
     final provider = Provider.of<DashboardProvider>(context, listen: false);
     final favs = provider.favorites;
@@ -1576,28 +1933,51 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                "QUICK FAVORITES",
-                style: TextStyle(
-                  color: onSurface.withOpacity(0.6),
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.5,
-                ),
+              Row(
+                children: [
+                  GestureDetector(
+                    onTap: () => setState(() => _showQueue = false),
+                    child: Text(
+                      "FAVORITES",
+                      style: TextStyle(
+                        color: !_showQueue ? theme.colorScheme.primary : onSurface.withOpacity(0.6),
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  GestureDetector(
+                    onTap: () => setState(() => _showQueue = true),
+                    child: Text(
+                      "QUEUE",
+                      style: TextStyle(
+                        color: _showQueue ? theme.colorScheme.primary : onSurface.withOpacity(0.6),
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              GestureDetector(
-                onTap: _editFavorites,
-                child: Padding(
-                  padding: const EdgeInsets.all(4.0),
-                  child: Icon(Icons.edit, color: onSurface.withOpacity(0.5), size: 14),
+              if (!_showQueue)
+                GestureDetector(
+                  onTap: _editFavorites,
+                  child: Padding(
+                    padding: const EdgeInsets.all(4.0),
+                    child: Icon(Icons.edit, color: onSurface.withOpacity(0.5), size: 14),
+                  ),
                 ),
-              ),
             ],
           ),
         ),
         
         Expanded(
-          child: ListView.builder(
+          child: _showQueue
+              ? const QueueTab()
+              : ListView.builder(
             itemCount: provider.favorites.length,
             padding: const EdgeInsets.only(top: 4.0),
             itemBuilder: (context, index) {
@@ -1804,6 +2184,130 @@ class _AutoScrollTextState extends State<AutoScrollText> with SingleTickerProvid
       child: Text(
         widget.text,
         style: widget.style,
+      ),
+    );
+  }
+}
+
+class CellularIconWidget extends StatelessWidget {
+  final int bars;
+  final Color color;
+  final double size;
+
+  const CellularIconWidget({
+    super.key,
+    required this.bars,
+    required this.color,
+    required this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: List.generate(4, (index) {
+          final isActive = index < bars;
+          return Container(
+            width: size * 0.16,
+            height: size * (0.4 + (index * 0.2)),
+            decoration: BoxDecoration(
+              color: isActive ? color : color.withOpacity(0.3),
+              borderRadius: BorderRadius.circular(size * 0.05),
+            ),
+          );
+        }),
+      ),
+    );
+  }
+}
+
+class ThickBrightnessSlider extends StatelessWidget {
+  final int brightness; // 0-255
+  final bool isAdaptive;
+  final ValueChanged<int> onChanged;
+  final VoidCallback onToggleAdaptive;
+  final Color activeColor;
+  final Color backgroundColor;
+  final Color iconColor;
+
+  const ThickBrightnessSlider({
+    super.key,
+    required this.brightness,
+    required this.isAdaptive,
+    required this.onChanged,
+    required this.onToggleAdaptive,
+    required this.activeColor,
+    required this.backgroundColor,
+    required this.iconColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onPanUpdate: (details) {
+        if (isAdaptive) return;
+        final RenderBox box = context.findRenderObject() as RenderBox;
+        final localPos = box.globalToLocal(details.globalPosition);
+        final width = box.size.width;
+        if (width <= 0) return;
+        double percentage = (localPos.dx / width).clamp(0.0, 1.0);
+        onChanged((percentage * 255).toInt());
+      },
+      onTapDown: (details) {
+        if (isAdaptive) return;
+        final RenderBox box = context.findRenderObject() as RenderBox;
+        final localPos = box.globalToLocal(details.globalPosition);
+        final width = box.size.width;
+        if (width <= 0) return;
+        double percentage = (localPos.dx / width).clamp(0.0, 1.0);
+        onChanged((percentage * 255).toInt());
+      },
+      child: Container(
+        width: double.infinity, // stretch to fill parent Expanded
+        height: 32, // thick
+        decoration: BoxDecoration(
+          color: backgroundColor,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: Stack(
+            children: [
+              // Filled portion
+              if (!isAdaptive)
+                FractionallySizedBox(
+                  widthFactor: (brightness / 255.0).clamp(0.0, 1.0),
+                  heightFactor: 1.0,
+                  child: Container(color: activeColor),
+                ),
+              // If adaptive, fill lightly to indicate "auto"
+              if (isAdaptive)
+                Container(color: activeColor.withOpacity(0.2)),
+
+              // Embedded Icon (acting as the toggle)
+              Align(
+                alignment: Alignment.centerRight,
+                child: GestureDetector(
+                  onTap: onToggleAdaptive,
+                  behavior: HitTestBehavior.opaque,
+                  child: Container(
+                    height: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 10.0),
+                    child: Icon(
+                      isAdaptive ? Icons.brightness_auto : Icons.brightness_medium,
+                      size: 16,
+                      color: isAdaptive ? activeColor : (brightness > 180 ? backgroundColor : iconColor), 
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

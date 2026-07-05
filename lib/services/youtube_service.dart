@@ -41,6 +41,7 @@ class YouTubeService extends ChangeNotifier {
       await _googleSignIn.signIn();
     } catch (error) {
       debugPrint("Google Sign In Error: $error");
+      rethrow;
     }
   }
 

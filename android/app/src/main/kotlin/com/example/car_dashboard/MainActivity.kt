@@ -22,6 +22,10 @@ import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import androidx.core.app.ActivityCompat
 import android.app.role.RoleManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
+import android.media.AudioManager
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.car_dashboard/system"
@@ -58,6 +62,77 @@ class MainActivity : FlutterActivity() {
                     startActivity(intent)
                     result.success(true)
                 }
+                "startDashcam" -> {
+                    try {
+                        val launchIntent = Intent("com.helge.droiddashcam.START_RECORDING")
+                        launchIntent.setPackage("com.helge.droiddashcam")
+                        sendBroadcast(launchIntent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
+                "stopDashcam" -> {
+                    try {
+                        val launchIntent = Intent("com.helge.droiddashcam.STOP_RECORDING")
+                        launchIntent.setPackage("com.helge.droiddashcam")
+                        sendBroadcast(launchIntent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
+                "getBrightnessInfo" -> {
+                    try {
+                        val brightness = Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS)
+                        val mode = Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE)
+                        result.success(mapOf("brightness" to brightness, "adaptive" to (mode == Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC)))
+                    } catch(e: Exception) {
+                        result.success(mapOf("brightness" to 128, "adaptive" to true))
+                    }
+                }
+                "setSystemBrightness" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.System.canWrite(context)) {
+                        val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS)
+                        intent.data = android.net.Uri.parse("package:" + context.packageName)
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(intent)
+                        result.success(false)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val mode = call.argument<Boolean>("adaptive")
+                        if (mode != null) {
+                            Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE, if (mode) Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC else Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
+                        }
+                        val brightness = call.argument<Int>("brightness")
+                        if (brightness != null) {
+                            Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, brightness)
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
+                "getRingerMode" -> {
+                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    result.success(audioManager.ringerMode)
+                }
+                "setRingerMode" -> {
+                    try {
+                        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                        val mode = call.argument<Int>("mode") ?: AudioManager.RINGER_MODE_NORMAL
+                        audioManager.ringerMode = mode
+                        result.success(true)
+                    } catch (e: SecurityException) {
+                        val intent = Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(intent)
+                        result.success(false)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
                 "checkOverlay" -> {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                         result.success(Settings.canDrawOverlays(this))
@@ -87,6 +162,55 @@ class MainActivity : FlutterActivity() {
                 }
                 "getDashcamStatus" -> {
                     result.success(DashcamListenerService.isRecording)
+                }
+                "isNavigating" -> {
+                    result.success(DashcamListenerService.isNavigating)
+                }
+                "getNetworkStatus" -> {
+                    try {
+                        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                        val network = connectivityManager.activeNetwork
+                        val capabilities = connectivityManager.getNetworkCapabilities(network)
+                        
+                        var isWifi = false
+                        var wifiBars = 0
+                        var isCellular = false
+                        var cellularBars = 0
+                        
+                        if (capabilities != null) {
+                            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                                isWifi = true
+                                val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                                val wifiInfo = wifiManager.connectionInfo
+                                wifiBars = WifiManager.calculateSignalLevel(wifiInfo.rssi, 5)
+                            }
+                            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                                isCellular = true
+                            }
+                        }
+                        
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as android.telephony.TelephonyManager
+                            val signal = telephonyManager.signalStrength
+                            if (signal != null) {
+                                cellularBars = signal.level
+                            }
+                        }
+                        
+                        result.success(mapOf(
+                            "isWifi" to isWifi,
+                            "wifiBars" to wifiBars,
+                            "isCellular" to isCellular,
+                            "cellularBars" to cellularBars
+                        ))
+                    } catch (e: Exception) {
+                        result.success(mapOf(
+                            "isWifi" to false,
+                            "wifiBars" to 0,
+                            "isCellular" to false,
+                            "cellularBars" to 0
+                        ))
+                    }
                 }
                 "getMediaProgress" -> {
                     try {

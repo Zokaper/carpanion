@@ -94,21 +94,25 @@ class _QueueTabState extends State<QueueTab> {
       padding: const EdgeInsets.all(16.0),
       child: Column(
         children: [
-          Text(
-            "PASSENGER QUEUE",
-            style: TextStyle(
-              color: onSurface.withOpacity(0.6),
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 1.5,
-            ),
-          ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 8),
           if (!ytService.isSignedIn)
             Expanded(
               child: Center(
                 child: ElevatedButton.icon(
-                  onPressed: ytService.signIn,
+                  onPressed: () async {
+                    try {
+                      await ytService.signIn();
+                    } catch (e) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text("Google Sign-In failed: $e\nEnsure SHA-1 is configured in Google Cloud Console."),
+                            duration: const Duration(seconds: 4),
+                          ),
+                        );
+                      }
+                    }
+                  },
                   icon: const Icon(Icons.login),
                   label: const Text("Sign in with Google"),
                   style: ElevatedButton.styleFrom(

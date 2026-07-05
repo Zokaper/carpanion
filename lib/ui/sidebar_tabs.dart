@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 import '../main.dart';
 import 'phone_tab.dart';
 import 'notifications_tab.dart';
-import 'queue_tab.dart';
 
 // We reuse the FavoritesSidebar from main.dart for the Media tab.
 // Since it's still in main.dart, we can just import it.
@@ -45,12 +44,6 @@ class HeaderTabsWidget extends StatelessWidget {
             title: "Alerts",
             isSelected: provider.selectedSidebarTab == 2,
             onTap: () => provider.setSidebarTab(2, isManual: true),
-          ),
-          _TabButton(
-            icon: Icons.qr_code,
-            title: "Queue",
-            isSelected: provider.selectedSidebarTab == 3,
-            onTap: () => provider.setSidebarTab(3, isManual: true),
           ),
         ],
       ),
@@ -117,7 +110,6 @@ class _SidebarContentWidgetState extends State<SidebarContentWidget> {
         FavoritesSidebar(key: ValueKey(0)),
         PhoneTab(key: ValueKey(1)),
         NotificationsTab(key: ValueKey(2)),
-        QueueTab(key: ValueKey(3)),
       ],
     );
   }
@@ -144,9 +136,9 @@ class StrictPageScrollPhysics extends ScrollPhysics {
     
     double targetPage;
     if (velocity > 0.0) {
-      targetPage = (portion.floorToDouble() + 1.0).clamp(0.0, 3.0);
+      targetPage = (portion.floorToDouble() + 1.0).clamp(0.0, 2.0);
     } else if (velocity < 0.0) {
-      targetPage = (portion.ceilToDouble() - 1.0).clamp(0.0, 3.0);
+      targetPage = (portion.ceilToDouble() - 1.0).clamp(0.0, 2.0);
     } else {
       targetPage = currentPage;
     }

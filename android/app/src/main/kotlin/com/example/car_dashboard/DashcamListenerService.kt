@@ -14,25 +14,34 @@ class DashcamListenerService : NotificationListenerService() {
     companion object {
         var instance: DashcamListenerService? = null
         var isRecording: Boolean = false
+        var isNavigating: Boolean = false
         val activeNotificationsMap = mutableMapOf<String, Map<String, Any>>()
         val activeIntents = mutableMapOf<String, android.app.PendingIntent>()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         checkDashcam(sbn)
+        checkNavigation(sbn)
         cacheNotification(sbn)
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        if (sbn.packageName == "com.helge.droiddashcam") {
-            var stillRecording = false
+        if (sbn.packageName == "com.google.android.apps.maps") {
+            var stillNavigating = false
             for (n in activeNotifications) {
-                if (n.packageName == "com.helge.droiddashcam" && n.id != sbn.id) {
-                    stillRecording = true
-                    break
+                if (n.packageName == "com.google.android.apps.maps" && n.id != sbn.id) {
+                    val isOngoing = (n.notification.flags and Notification.FLAG_ONGOING_EVENT) != 0
+                    if (isOngoing) {
+                        stillNavigating = true
+                        break
+                    }
                 }
             }
-            isRecording = stillRecording
+            isNavigating = stillNavigating
+        }
+
+        if (sbn.packageName == "com.helge.droiddashcam") {
+            updateDashcamRecordingState(sbn.id)
         }
         activeNotificationsMap.remove(sbn.key)
         activeIntents.remove(sbn.key)
@@ -43,6 +52,7 @@ class DashcamListenerService : NotificationListenerService() {
         instance = this
         for (sbn in activeNotifications) {
             checkDashcam(sbn)
+            checkNavigation(sbn)
             cacheNotification(sbn)
         }
     }
@@ -52,9 +62,46 @@ class DashcamListenerService : NotificationListenerService() {
         instance = null
     }
 
+    private fun isDashcamRecordingNotification(sbn: StatusBarNotification): Boolean {
+        if (sbn.packageName != "com.helge.droiddashcam") return false
+        val notification = sbn.notification
+        val usesChronometer = notification.extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER, false)
+        if (usesChronometer) return true
+        
+        val title = notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.lowercase() ?: ""
+        val text = notification.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.lowercase() ?: ""
+        return title.contains("record") || text.contains("record") || title.contains("rec") || text.contains("rec")
+    }
+
     private fun checkDashcam(sbn: StatusBarNotification) {
         if (sbn.packageName == "com.helge.droiddashcam") {
-            isRecording = true
+            if (isDashcamRecordingNotification(sbn)) {
+                isRecording = true
+            } else {
+                updateDashcamRecordingState(sbn.id)
+            }
+        }
+    }
+
+    private fun updateDashcamRecordingState(excludeId: Int = -1) {
+        var stillRecording = false
+        try {
+            for (n in activeNotifications) {
+                if (n.id != excludeId && isDashcamRecordingNotification(n)) {
+                    stillRecording = true
+                    break
+                }
+            }
+        } catch (e: Exception) {}
+        isRecording = stillRecording
+    }
+
+    private fun checkNavigation(sbn: StatusBarNotification) {
+        if (sbn.packageName == "com.google.android.apps.maps") {
+            val isOngoing = (sbn.notification.flags and Notification.FLAG_ONGOING_EVENT) != 0
+            if (isOngoing) {
+                isNavigating = true
+            }
         }
     }
 
@@ -81,6 +128,59 @@ class DashcamListenerService : NotificationListenerService() {
         } catch (e: Exception) {}
 
         if (title.isNotEmpty() || text.isNotEmpty()) {
+            val currentMessagesList = mutableListOf<Map<String, String>>()
+            val extras = notification.extras
+            val messagesArray = extras.getParcelableArray(Notification.EXTRA_MESSAGES)
+            if (messagesArray != null && messagesArray.isNotEmpty()) {
+                for (p in messagesArray) {
+                    if (p is android.os.Bundle) {
+                        val msgText = p.getCharSequence("text")?.toString()
+                        var sender = p.getCharSequence("sender")?.toString()
+                        if (sender == null) {
+                            try {
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                                    val person = p.getParcelable<android.app.Person>("sender_person")
+                                    sender = person?.name?.toString()
+                                }
+                            } catch (e: Exception) {}
+                        }
+                        val time = p.getLong("time", 0L)
+                        
+                        if (msgText != null) {
+                            currentMessagesList.add(mapOf(
+                                "text" to msgText, 
+                                "sender" to (sender ?: ""),
+                                "time" to time.toString()
+                            ))
+                        }
+                    }
+                }
+            } else {
+                val lines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
+                if (lines != null && lines.isNotEmpty()) {
+                    for (line in lines) {
+                        currentMessagesList.add(mapOf("text" to line.toString(), "sender" to "", "time" to sbn.postTime.toString()))
+                    }
+                } else if (text.isNotEmpty()) {
+                    currentMessagesList.add(mapOf("text" to text, "sender" to "", "time" to sbn.postTime.toString()))
+                }
+            }
+
+            val existingMap = activeNotificationsMap[sbn.key]
+            @Suppress("UNCHECKED_CAST")
+            val existingMessages = (existingMap?.get("messages") as? List<Map<String, String>>) ?: emptyList()
+            
+            val mergedMessages = existingMessages.toMutableList()
+            for (msg in currentMessagesList) {
+                val isDuplicate = mergedMessages.any { existing -> 
+                    existing["text"] == msg["text"] && 
+                    (msg["time"] == "0" || existing["time"] == msg["time"] || existing["time"] == "0")
+                }
+                if (!isDuplicate) {
+                    mergedMessages.add(msg)
+                }
+            }
+
             val map = mutableMapOf<String, Any>(
                 "key" to sbn.key,
                 "title" to title,
@@ -90,6 +190,9 @@ class DashcamListenerService : NotificationListenerService() {
                 "package" to packageName,
                 "postTime" to sbn.postTime.toString()
             )
+            if (mergedMessages.isNotEmpty()) {
+                map["messages"] = mergedMessages
+            }
             
             // Save intent for later execution
             if (notification.contentIntent != null) {
