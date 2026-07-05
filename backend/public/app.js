@@ -208,6 +208,9 @@ if (currentSession && typeof io !== 'undefined') {
   });
 
   function renderSearchResults(results) {
+    // Drop late-arriving network responses if the user has already cleared the search or tapped "Add"
+    if (!searchInput.value.trim()) return;
+    
     const container = document.getElementById('searchResults');
     container.innerHTML = '';
     if (results.length === 0) {
