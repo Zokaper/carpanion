@@ -59,7 +59,14 @@ class _QueueTabState extends State<QueueTab> {
 
   void _onDashboardUpdate() {
     if (_dashboard.currentTrack != _lastTrack) {
-      _lastTrack = _dashboard.currentTrack;
+      if (mounted) {
+        setState(() {
+          _lastTrack = _dashboard.currentTrack;
+        });
+      } else {
+        _lastTrack = _dashboard.currentTrack;
+      }
+      
       if (socket?.connected == true) {
         socket!.emit('update_playing_status', _lastTrack);
       }
@@ -69,7 +76,11 @@ class _QueueTabState extends State<QueueTab> {
 
   void _scrollToPlayingTrack() {
     if (_userScrolled || !_scrollController.hasClients) return;
-    int index = _ytService.currentQueue.indexWhere((item) => item['title'] == _lastTrack);
+    int index = _ytService.currentQueue.indexWhere((item) {
+      final qTitle = (item['title'] ?? '').toLowerCase();
+      final dTitle = _lastTrack.toLowerCase();
+      return qTitle == dTitle || qTitle.contains(dTitle) || dTitle.contains(qTitle);
+    });
     if (index != -1) {
       // Calculate approximate position to center the item (approx 60px height per item)
       final position = (index * 60.0) - (150.0);
@@ -425,7 +436,11 @@ class _QueueTabState extends State<QueueTab> {
                           },
                           child: Builder(
                             builder: (context) {
-                              int playingIndex = ytService.currentQueue.indexWhere((item) => item['title'] == _lastTrack);
+                              int playingIndex = ytService.currentQueue.indexWhere((item) {
+                                final qTitle = (item['title'] ?? '').toLowerCase();
+                                final dTitle = _lastTrack.toLowerCase();
+                                return qTitle == dTitle || qTitle.contains(dTitle) || dTitle.contains(qTitle);
+                              });
                               return ListView.builder(
                                 controller: _scrollController,
                                 itemCount: ytService.currentQueue.length,
