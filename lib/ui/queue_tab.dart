@@ -323,71 +323,84 @@ class _QueueTabState extends State<QueueTab> {
                       letterSpacing: 1.5,
                     ),
                   ),
-                  Row(
-                    children: [
-                      IconButton(
-                        icon: Icon(Icons.qr_code, color: onSurface.withOpacity(0.5)),
-                        onPressed: () => setState(() => _showQrCodeOverlay = true),
-                        tooltip: 'Show QR Code',
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        iconSize: 20,
-                      ),
-                      const SizedBox(width: 16),
-                      IconButton(
-                        icon: Icon(_allowEditing ? Icons.edit : Icons.edit_off, color: _allowEditing ? theme.colorScheme.primary : onSurface.withOpacity(0.5)),
-                        onPressed: () {
-                          setState(() => _allowEditing = !_allowEditing);
-                          socket?.emit('update_permissions', _allowEditing);
-                        },
-                        tooltip: 'Allow Passenger Editing',
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        iconSize: 20,
-                      ),
-                      const SizedBox(width: 16),
-                      IconButton(
-                        icon: Icon(_allowMediaControl ? Icons.play_circle_outline : Icons.not_interested, color: _allowMediaControl ? theme.colorScheme.primary : onSurface.withOpacity(0.5)),
-                        onPressed: () {
-                          setState(() => _allowMediaControl = !_allowMediaControl);
-                          socket?.emit('update_media_permissions', _allowMediaControl);
-                        },
-                        tooltip: 'Allow Media Control',
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        iconSize: 20,
-                      ),
-                      if (ytService.currentQueue.isNotEmpty) ...[
-                        const SizedBox(width: 16),
-                        IconButton(
-                          icon: const Icon(Icons.delete_sweep, color: Colors.redAccent),
-                          onPressed: () {
-                            showDialog(
-                              context: context,
-                              builder: (context) => AlertDialog(
-                                backgroundColor: const Color(0xFF151525),
-                                title: const Text('Clear Queue?', style: TextStyle(color: Colors.white)),
-                                content: const Text('This will permanently delete all songs from the Collab playlist.', style: TextStyle(color: Colors.white70)),
-                                actions: [
-                                  TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
-                                  TextButton(
-                                    onPressed: () {
-                                      Navigator.pop(context);
-                                      ytService.clearPlaylist();
-                                    },
-                                    child: const Text('CLEAR', style: TextStyle(color: Colors.redAccent)),
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
-                          tooltip: 'Clear Queue',
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                          iconSize: 20,
+                  Expanded(
+                    child: Wrap(
+                      alignment: WrapAlignment.end,
+                      spacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: 36, height: 36,
+                          child: IconButton(
+                            icon: Icon(Icons.qr_code, color: onSurface.withOpacity(0.5)),
+                            onPressed: () => setState(() => _showQrCodeOverlay = true),
+                            tooltip: 'Show QR Code',
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            iconSize: 22,
+                          ),
                         ),
+                        SizedBox(
+                          width: 36, height: 36,
+                          child: IconButton(
+                            icon: Icon(_allowEditing ? Icons.edit : Icons.edit_off, color: _allowEditing ? theme.colorScheme.primary : onSurface.withOpacity(0.5)),
+                            onPressed: () {
+                              setState(() => _allowEditing = !_allowEditing);
+                              socket?.emit('update_permissions', _allowEditing);
+                            },
+                            tooltip: 'Allow Passenger Editing',
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            iconSize: 22,
+                          ),
+                        ),
+                        SizedBox(
+                          width: 36, height: 36,
+                          child: IconButton(
+                            icon: Icon(_allowMediaControl ? Icons.play_circle_outline : Icons.not_interested, color: _allowMediaControl ? theme.colorScheme.primary : onSurface.withOpacity(0.5)),
+                            onPressed: () {
+                              setState(() => _allowMediaControl = !_allowMediaControl);
+                              socket?.emit('update_media_permissions', _allowMediaControl);
+                            },
+                            tooltip: 'Allow Media Control',
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            iconSize: 22,
+                          ),
+                        ),
+                        if (ytService.currentQueue.isNotEmpty)
+                          SizedBox(
+                            width: 36, height: 36,
+                            child: IconButton(
+                              icon: const Icon(Icons.delete_sweep, color: Colors.redAccent),
+                              onPressed: () {
+                                showDialog(
+                                  context: context,
+                                  builder: (context) => AlertDialog(
+                                    backgroundColor: const Color(0xFF151525),
+                                    title: const Text('Clear Queue?', style: TextStyle(color: Colors.white)),
+                                    content: const Text('This will permanently delete all songs from the Collab playlist.', style: TextStyle(color: Colors.white70)),
+                                    actions: [
+                                      TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
+                                      TextButton(
+                                        onPressed: () {
+                                          Navigator.pop(context);
+                                          ytService.clearPlaylist();
+                                        },
+                                        child: const Text('CLEAR', style: TextStyle(color: Colors.redAccent)),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                              tooltip: 'Clear Queue',
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              iconSize: 22,
+                            ),
+                          ),
                       ],
-                    ],
+                    ),
                   ),
                 ],
               ),
