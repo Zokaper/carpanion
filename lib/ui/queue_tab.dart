@@ -131,6 +131,9 @@ class _QueueTabState extends State<QueueTab> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Added to Queue: $title'), duration: const Duration(seconds: 2)),
           );
+          if (!_queueStarted && _ytService.playlistId != null) {
+            _playQueue(_ytService.playlistId!);
+          }
         }
       }
     });
@@ -195,6 +198,9 @@ class _QueueTabState extends State<QueueTab> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Resolved & Added: $query'), duration: const Duration(seconds: 2)),
         );
+        if (!_queueStarted && _ytService.playlistId != null) {
+          _playQueue(_ytService.playlistId!);
+        }
       }
     });
 
@@ -320,7 +326,15 @@ class _QueueTabState extends State<QueueTab> {
                     const SizedBox(height: 16),
                     if (!_queueStarted)
                       ElevatedButton.icon(
-                        onPressed: ytService.playlistId != null ? () => _playQueue(ytService.playlistId!) : null,
+                        onPressed: ytService.playlistId != null ? () {
+                          if (ytService.currentQueue.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Please add at least one song to start the collab!')),
+                            );
+                          } else {
+                            _playQueue(ytService.playlistId!);
+                          }
+                        } : null,
                         icon: const Icon(Icons.play_arrow, size: 20),
                         label: const Text("START COLLAB", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                         style: ElevatedButton.styleFrom(
