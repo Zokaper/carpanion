@@ -91,98 +91,101 @@ class _QueueTabState extends State<QueueTab> {
     final onSurface = theme.colorScheme.onSurface;
 
     return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        children: [
-          const SizedBox(height: 8),
-          if (!ytService.isSignedIn)
-            Expanded(
-              child: Center(
-                child: ElevatedButton.icon(
-                  onPressed: () async {
-                    try {
-                      await ytService.signIn();
-                    } catch (e) {
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text("Google Sign-In failed: $e\nEnsure SHA-1 is configured in Google Cloud Console."),
-                            duration: const Duration(seconds: 4),
-                          ),
-                        );
+      padding: const EdgeInsets.all(8.0),
+      child: SingleChildScrollView(
+        child: Column(
+          children: [
+            const SizedBox(height: 8),
+            if (!ytService.isSignedIn)
+              Padding(
+                padding: const EdgeInsets.only(top: 32.0),
+                child: Center(
+                  child: ElevatedButton.icon(
+                    onPressed: () async {
+                      try {
+                        await ytService.signIn();
+                      } catch (e) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text("Google Sign-In failed: $e\nEnsure SHA-1 is configured in Google Cloud Console."),
+                              duration: const Duration(seconds: 4),
+                            ),
+                          );
+                        }
                       }
-                    }
-                  },
-                  icon: const Icon(Icons.login),
-                  label: const Text("Sign in with Google"),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    },
+                    icon: const Icon(Icons.login),
+                    label: const Text("Sign in with Google"),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    ),
                   ),
                 ),
-              ),
-            )
-          else ...[
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: QrImageView(
-                data: '$backendUrl/?session=$sessionId',
-                version: QrVersions.auto,
-                size: 160.0,
-                backgroundColor: Colors.white,
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              "Session: $sessionId",
-              style: TextStyle(
-                color: onSurface,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              "Scan to add songs to the queue",
-              style: TextStyle(color: onSurface.withOpacity(0.7)),
-            ),
-            const Spacer(),
-            if (_recentlyAdded.isNotEmpty) ...[
-              Text(
-                "Recently Added",
-                style: TextStyle(
-                  color: onSurface.withOpacity(0.6),
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.5,
+              )
+            else ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: QrImageView(
+                  data: '$backendUrl/?session=$sessionId',
+                  version: QrVersions.auto,
+                  size: 120.0,
+                  backgroundColor: Colors.white,
                 ),
               ),
-              const SizedBox(height: 8),
-              ..._recentlyAdded.map((song) => Text(
-                song,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: onSurface, fontSize: 14),
-              )),
-              const Spacer(),
-            ],
-            ElevatedButton.icon(
-              onPressed: ytService.playlistId != null 
-                  ? () => _playQueue(ytService.playlistId!) 
-                  : null,
-              icon: const Icon(Icons.play_arrow),
-              label: const Text("PLAY QUEUE"),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: theme.colorScheme.primary,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+              const SizedBox(height: 12),
+              Text(
+                "Session: $sessionId",
+                style: TextStyle(
+                  color: onSurface,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-            ),
-          ]
-        ],
+              const SizedBox(height: 4),
+              Text(
+                "Scan to add songs to the queue",
+                style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 12),
+              ),
+              const SizedBox(height: 16),
+              if (_recentlyAdded.isNotEmpty) ...[
+                Text(
+                  "Recently Added",
+                  style: TextStyle(
+                    color: onSurface.withOpacity(0.6),
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                ..._recentlyAdded.map((song) => Text(
+                  song,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: onSurface, fontSize: 12),
+                )),
+                const SizedBox(height: 16),
+              ],
+              ElevatedButton.icon(
+                onPressed: ytService.playlistId != null 
+                    ? () => _playQueue(ytService.playlistId!) 
+                    : null,
+                icon: const Icon(Icons.play_arrow),
+                label: const Text("PLAY QUEUE"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: theme.colorScheme.primary,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                ),
+              ),
+            ]
+          ],
+        ),
       ),
     );
   }
