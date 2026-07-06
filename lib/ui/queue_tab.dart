@@ -148,7 +148,10 @@ class _QueueTabState extends State<QueueTab> {
       debugPrint("Received add_song event: $data");
       if (data['videoId'] != null) {
         final title = data['title'] ?? 'Unknown Song';
-        final success = await _ytService.addVideoToPlaylist(data['videoId']);
+        final success = await _ytService.addVideoToPlaylist(
+          data['videoId'],
+          title: data['title'] ?? '',
+        );
         if (success && mounted) {
           setState(() {
             _recentlyAdded.insert(0, title);
@@ -270,6 +273,26 @@ class _QueueTabState extends State<QueueTab> {
         : null;
     final query = item != null ? '${item['title']} ${item['artist']}' : videoId;
 
+    // Primary: Use MediaSession transport controls (no UI flash, audio-only)
+    DashboardProvider.platform.invokeMethod('playFromMediaSession', {
+      'videoId': videoId,
+      'query': query,
+    }).then((result) {
+      final success = result is Map && result['success'] == true;
+      if (success) {
+        debugPrint("Collab: Playing via MediaSession (${result['method']}): $query");
+      } else {
+        // Fallback: Launch via intent (will flash YT Music briefly)
+        debugPrint("Collab: MediaSession failed (${result is Map ? result['error'] : 'unknown'}), falling back to intent");
+        _playViaIntent(query);
+      }
+    }).catchError((e) {
+      debugPrint("Collab: MediaSession error: $e, falling back to intent");
+      _playViaIntent(query);
+    });
+  }
+
+  void _playViaIntent(String query) {
     final intent = AndroidIntent(
       action: 'android.media.action.MEDIA_PLAY_FROM_SEARCH',
       arguments: <String, dynamic>{
@@ -285,7 +308,7 @@ class _QueueTabState extends State<QueueTab> {
       Provider.of<DashboardProvider>(context, listen: false).setWaitingForMusic();
     }
     
-    // Attempt to automatically pull the Dashboard back to the front after 2 seconds
+    // Pull Dashboard back to front after intent launches YT Music
     Future.delayed(const Duration(seconds: 2), () {
       final backIntent = AndroidIntent(
         action: 'action_main',

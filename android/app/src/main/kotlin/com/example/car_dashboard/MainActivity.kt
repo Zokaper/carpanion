@@ -484,6 +484,64 @@ class MainActivity : FlutterActivity() {
                         result.error("INVALID", "Number is null", null)
                     }
                 }
+                "playFromMediaSession" -> {
+                    try {
+                        val videoId = call.argument<String>("videoId")
+                        val query = call.argument<String>("query") ?: ""
+                        val mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+                        val componentName = ComponentName(this@MainActivity, DashcamListenerService::class.java)
+                        val controllers = mediaSessionManager.getActiveSessions(componentName)
+                        
+                        val ytController = controllers.firstOrNull { 
+                            it.packageName == "com.google.android.apps.youtube.music" 
+                        }
+                        
+                        if (ytController != null) {
+                            if (videoId != null && videoId.isNotEmpty()) {
+                                // Primary: playFromUri — confirmed working, no UI flash
+                                val uri = android.net.Uri.parse("https://music.youtube.com/watch?v=$videoId")
+                                val extras = android.os.Bundle()
+                                extras.putString("android.intent.extra.focus", "vnd.android.cursor.item/audio")
+                                ytController.transportControls.playFromUri(uri, extras)
+                                android.util.Log.d("Carpanion", "playFromUri sent to YT Music: $uri")
+                                result.success(mapOf(
+                                    "success" to true,
+                                    "method" to "playFromUri",
+                                    "videoId" to videoId
+                                ))
+                            } else if (query.isNotEmpty()) {
+                                // Fallback: playFromSearch (less reliable, may be ignored by YT Music)
+                                val extras = android.os.Bundle()
+                                extras.putString("query", query)
+                                extras.putString("android.intent.extra.focus", "vnd.android.cursor.item/audio")
+                                ytController.transportControls.playFromSearch(query, extras)
+                                android.util.Log.d("Carpanion", "playFromSearch sent to YT Music: $query")
+                                result.success(mapOf(
+                                    "success" to true,
+                                    "method" to "playFromSearch",
+                                    "query" to query
+                                ))
+                            } else {
+                                result.success(mapOf(
+                                    "success" to false,
+                                    "error" to "No videoId or query provided"
+                                ))
+                            }
+                        } else {
+                            android.util.Log.w("Carpanion", "No YT Music media session found")
+                            result.success(mapOf(
+                                "success" to false,
+                                "error" to "No YT Music media session found"
+                            ))
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("Carpanion", "playFromMediaSession error: ${e.message}")
+                        result.success(mapOf(
+                            "success" to false,
+                            "error" to (e.message ?: "Unknown error")
+                        ))
+                    }
+                }
                 else -> {
                     result.notImplemented()
                 }

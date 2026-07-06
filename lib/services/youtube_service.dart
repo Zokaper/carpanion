@@ -18,55 +18,28 @@ class YouTubeService extends ChangeNotifier {
   bool get isSignedIn => _currentUser != null;
   
   List<Map<String, dynamic>> currentQueue = [];
-  final Map<String, Map<String, String>> _itunesMetadataCache = {};
+  // Caches full YT Music song metadata ({videoId, title, artist, thumbnail}) keyed by search query.
+  final Map<String, Map<String, String>> _ytMusicSongCache = {};
 
   bool _isAdding = false;
 
   String? lastAddedVideoId;
   DateTime? lastAddedTime;
 
-  Future<Map<String, String>> _getItunesMetadata(String youtubeTitle, String youtubeChannel, String defaultThumb) async {
-    final cacheKey = '$youtubeTitle|$youtubeChannel';
-    if (_itunesMetadataCache.containsKey(cacheKey)) {
-      return _itunesMetadataCache[cacheKey]!;
-    }
-    
-    String cleanTitle = youtubeTitle
+  /// Strips common YouTube title noise so the query fed to YT Music is clean.
+  String _cleanTitle(String title) => title
       .replaceAll(RegExp(r'\(.*?\)'), '')
       .replaceAll(RegExp(r'\[.*?\]'), '')
       .replaceAll(RegExp(r'official audio', caseSensitive: false), '')
+      .replaceAll(RegExp(r'official video', caseSensitive: false), '')
       .replaceAll(RegExp(r'music video', caseSensitive: false), '')
+      .replaceAll(RegExp(r'lyric[s]? video', caseSensitive: false), '')
       .trim();
-      
-    String cleanChannel = youtubeChannel
+
+  String _cleanChannel(String channel) => channel
       .replaceAll(RegExp(r' - Topic', caseSensitive: false), '')
       .replaceAll(RegExp(r'VEVO', caseSensitive: false), '')
       .trim();
-      
-    try {
-      final searchTerm = Uri.encodeComponent('$cleanTitle $cleanChannel');
-      final url = Uri.parse('https://itunes.apple.com/search?term=$searchTerm&entity=song&limit=1');
-      var res = await http.get(url).timeout(const Duration(seconds: 3));
-      var data = jsonDecode(res.body);
-
-      if (data['results'] != null && data['results'].isNotEmpty) {
-        final trackName = data['results'][0]['trackName']?.toString() ?? cleanTitle;
-        final artistName = data['results'][0]['artistName']?.toString() ?? 'Unknown Artist';
-        final artwork = data['results'][0]['artworkUrl100']?.toString() ?? defaultThumb;
-        // Replace with higher resolution artwork (100x100 to 400x400)
-        final highResArtwork = artwork.replaceAll('100x100bb.jpg', '400x400bb.jpg');
-        final meta = {'title': trackName, 'artist': artistName, 'thumbnail': highResArtwork};
-        _itunesMetadataCache[cacheKey] = meta;
-        return meta;
-      }
-    } catch(e) {
-      debugPrint("iTunes metadata fetch failed for $youtubeTitle: $e");
-    }
-    
-    final meta = {'title': cleanTitle, 'artist': cleanChannel.isNotEmpty ? cleanChannel : 'YouTube', 'thumbnail': defaultThumb};
-    // Do not cache the fallback so it can retry next time
-    return meta;
-  }
 
   YouTubeService() {
     _googleSignIn.onCurrentUserChanged.listen((GoogleSignInAccount? account) async {
@@ -119,13 +92,186 @@ class YouTubeService extends ChangeNotifier {
     }
   }
 
-  Future<bool> addVideoToPlaylist(String videoId, {String title = 'Unknown', String channel = 'YouTube', String thumbnail = ''}) async {
+  /// Searches YT Music directly (Innertube API, "Songs" filter) and returns the
+  /// top song's full metadata: {videoId, title, artist, thumbnail}.
+  ///
+  /// This is the single source of truth for the queue. YT Music's own search
+  /// resolves the correct audio-only "song" version (from "Artist - Topic"
+  /// channels), so we no longer chain YouTube Data API + iTunes lookups (each of
+  /// which trusted the previous hop's top result and compounded mismatches).
+  Future<Map<String, String>?> _searchYTMusicSong(String query) async {
+    final cacheKey = query.trim().toLowerCase();
+    if (cacheKey.isEmpty) return null;
+    if (_ytMusicSongCache.containsKey(cacheKey)) {
+      return _ytMusicSongCache[cacheKey];
+    }
+
+    try {
+      final url = Uri.parse('https://music.youtube.com/youtubei/v1/search?key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30');
+      final response = await http.post(
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+          'Origin': 'https://music.youtube.com',
+          'Referer': 'https://music.youtube.com/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+        body: jsonEncode({
+          'context': {
+            'client': {
+              'clientName': 'WEB_REMIX',
+              'clientVersion': '1.20231204.01.00',
+            },
+          },
+          'query': query,
+          'params': 'EgWKAQIIAWoKEAkQBRAKEAMQBA==', // Filter: Songs only
+        }),
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        // Navigate the nested Innertube response to the first song shelf item.
+        final tabs = data['contents']?['tabbedSearchResultsRenderer']?['tabs'];
+        if (tabs is List && tabs.isNotEmpty) {
+          final sectionList = tabs[0]['tabRenderer']?['content']?['sectionListRenderer']?['contents'];
+          if (sectionList is List) {
+            for (final section in sectionList) {
+              final shelfContents = section['musicShelfRenderer']?['contents'];
+              if (shelfContents is List && shelfContents.isNotEmpty) {
+                for (final item in shelfContents) {
+                  final renderer = item['musicResponsiveListItemRenderer'];
+                  if (renderer == null) continue;
+                  final song = _parseSongRenderer(renderer);
+                  if (song != null) {
+                    debugPrint('YT Music resolved "$query" → "${song['title']}" by "${song['artist']}" (${song['videoId']})');
+                    _ytMusicSongCache[cacheKey] = song;
+                    return song;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      debugPrint('YT Music search returned no song results for "$query"');
+    } catch (e) {
+      debugPrint('YT Music search failed: $e');
+    }
+    return null;
+  }
+
+  /// Extracts {videoId, title, artist, thumbnail} from a musicResponsiveListItemRenderer.
+  /// Returns null if no playable video ID can be found.
+  Map<String, String>? _parseSongRenderer(Map renderer) {
+    // Video ID: prefer playlistItemData, fall back to the overlay play button.
+    String? videoId = renderer['playlistItemData']?['videoId']?.toString();
+    if (videoId == null || videoId.isEmpty) {
+      videoId = renderer['overlay']?['musicItemThumbnailOverlayRenderer']
+          ?['content']?['musicPlayButtonRenderer']
+          ?['playNavigationEndpoint']?['watchEndpoint']?['videoId']?.toString();
+    }
+    if (videoId == null || videoId.isEmpty) return null;
+
+    String title = '';
+    String artist = '';
+    final flexColumns = renderer['flexColumns'];
+    if (flexColumns is List && flexColumns.isNotEmpty) {
+      // Column 0 = title.
+      final titleRuns = flexColumns[0]?['musicResponsiveListItemFlexColumnRenderer']?['text']?['runs'];
+      if (titleRuns is List && titleRuns.isNotEmpty) {
+        title = titleRuns[0]?['text']?.toString() ?? '';
+      }
+      // Column 1 = "Artist • Album • Duration"; first run is the primary artist.
+      if (flexColumns.length > 1) {
+        final subRuns = flexColumns[1]?['musicResponsiveListItemFlexColumnRenderer']?['text']?['runs'];
+        if (subRuns is List && subRuns.isNotEmpty) {
+          artist = subRuns[0]?['text']?.toString() ?? '';
+        }
+      }
+    }
+
+    String thumbnail = '';
+    final thumbs = renderer['thumbnail']?['musicThumbnailRenderer']?['thumbnail']?['thumbnails'];
+    if (thumbs is List && thumbs.isNotEmpty) {
+      thumbnail = thumbs.last['url']?.toString() ?? '';
+      // Bump the sizing params (e.g. =w60-h60) up for a crisp queue thumbnail.
+      thumbnail = thumbnail.replaceAll(RegExp(r'=w\d+-h\d+'), '=w400-h400');
+    }
+
+    return {
+      'videoId': videoId,
+      'title': title.isNotEmpty ? title : 'Unknown',
+      'artist': artist,
+      'thumbnail': thumbnail,
+    };
+  }
+
+  /// Fetches the real title of a YouTube video via the Data API. Used when an
+  /// add request arrives with only a videoId (e.g. shared links), so we have a
+  /// meaningful query to hand to YT Music search.
+  Future<String?> _fetchYouTubeVideoTitle(String videoId) async {
+    if (_youtubeApi == null) return null;
+    try {
+      return await _withAuthRetry<String?>(() async {
+        final res = await _youtubeApi!.videos.list(['snippet'], id: [videoId]);
+        final items = res.items;
+        if (items != null && items.isNotEmpty) {
+          final snippet = items.first.snippet;
+          return '${snippet?.title ?? ''} ${snippet?.channelTitle ?? ''}'.trim();
+        }
+        return null;
+      });
+    } catch (e) {
+      debugPrint('Failed to fetch YouTube video title for $videoId: $e');
+      return null;
+    }
+  }
+
+  /// Adds a song given a YouTube videoId (e.g. from a shared link / passenger
+  /// "add by id"). We build a text query from the provided title/channel (or
+  /// look up the real YouTube title if none was supplied) and route it through
+  /// YT Music search so the queue gets the correct audio-only song version.
+  Future<bool> addVideoToPlaylist(String videoId, {String title = '', String channel = '', String thumbnail = ''}) async {
+    // Build the best query we can for YT Music.
+    String query = _cleanTitle(title);
+    final cleanChannel = _cleanChannel(channel);
+    if (cleanChannel.isNotEmpty) query = '$query $cleanChannel'.trim();
+
+    // No usable metadata came with the request — fetch the real video title.
+    if (query.isEmpty) {
+      final fetched = await _fetchYouTubeVideoTitle(videoId);
+      if (fetched != null) query = _cleanTitle(fetched);
+    }
+
+    if (query.isNotEmpty) {
+      final song = await _searchYTMusicSong(query);
+      if (song != null && song['videoId']!.isNotEmpty) {
+        debugPrint('Queue: Using YT Music song ID (${song['videoId']}) for "${song['title']}" (from videoId $videoId)');
+        return _addResolvedSong(song, originalVideoId: videoId);
+      }
+    }
+
+    // Fallback: queue the original video with whatever metadata we have.
+    debugPrint('Queue: Falling back to original video ID ($videoId); YT Music resolution failed for "$query"');
+    return _addResolvedSong({
+      'videoId': videoId,
+      'title': _cleanTitle(title).isNotEmpty ? _cleanTitle(title) : (query.isNotEmpty ? query : 'Unknown'),
+      'artist': cleanChannel,
+      'thumbnail': thumbnail,
+    }, originalVideoId: videoId);
+  }
+
+  /// Inserts a fully-resolved song ({videoId, title, artist, thumbnail}) into the
+  /// local queue, applying dedup and the 5-second repeat guard.
+  Future<bool> _addResolvedSong(Map<String, String> song, {required String originalVideoId}) async {
     while (_isAdding) {
       await Future.delayed(const Duration(milliseconds: 500));
     }
-    
+
     _isAdding = true;
     try {
+      final videoId = song['videoId'] ?? originalVideoId;
+
       if (lastAddedVideoId == videoId && lastAddedTime != null && DateTime.now().difference(lastAddedTime!).inSeconds < 5) {
         debugPrint("Ignoring duplicate add request for same video within 5 seconds.");
         return true;
@@ -136,25 +282,22 @@ class YouTubeService extends ChangeNotifier {
         currentQueue.removeAt(existingIndex);
       }
 
-      final meta = await _getItunesMetadata(title, channel, thumbnail);
-
-      final newItem = {
+      currentQueue.add({
         'id': DateTime.now().millisecondsSinceEpoch.toString(), // Unique local ID
         'videoId': videoId,
-        'title': meta['title'],
-        'artist': meta['artist'],
-        'thumbnail': meta['thumbnail'],
-      };
-
-      currentQueue.add(newItem);
+        'originalVideoId': originalVideoId,
+        'title': song['title'] ?? 'Unknown',
+        'artist': song['artist'] ?? '',
+        'thumbnail': song['thumbnail'] ?? '',
+      });
 
       lastAddedTime = DateTime.now();
       lastAddedVideoId = videoId;
-      
+
       notifyListeners();
       return true;
     } catch (e) {
-      debugPrint("Error adding video to local queue: $e");
+      debugPrint("Error adding song to local queue: $e");
       return false;
     } finally {
       _isAdding = false;
@@ -185,18 +328,15 @@ class YouTubeService extends ChangeNotifier {
     }
   }
 
+  /// Passenger typed a free-text query. Search YT Music directly with the "Songs"
+  /// filter and queue the top result — no YouTube Data API / iTunes middlemen.
   Future<bool> searchAndAddSong(String query) async {
     try {
-      final res = await searchSongs('$query official audio');
-      if (res.isNotEmpty) {
-        final item = res.first;
-        return await addVideoToPlaylist(
-          item['videoId'], 
-          title: item['title'], 
-          channel: item['channel'], 
-          thumbnail: item['thumbnail']
-        );
+      final song = await _searchYTMusicSong(query);
+      if (song != null && song['videoId']!.isNotEmpty) {
+        return await _addResolvedSong(song, originalVideoId: song['videoId']!);
       }
+      debugPrint('searchAndAddSong: no YT Music result for "$query"');
       return false;
     } catch (e) {
       debugPrint("Error in searchAndAddSong: $e");

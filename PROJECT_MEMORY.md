@@ -53,10 +53,13 @@ Exposes a `com.example.car_dashboard/system` channel with native APIs:
 4. **Network & Volume Indicators**: Added native code to fetch Wi-Fi and Cellular signal strength. Wired these to a new `CellularIconWidget` and status indicators in the dashboard header. Tapping the volume icon toggles between Ringer modes.
 5. **Thick Brightness Slider**: Replaced default slider UI with a thick custom gesture-based track slider supporting quick auto/adaptive brightness toggling.
 6. **Gauge Redlines & Confirmation**: Added redline sweep gradients to the speedometer gauge and a confirmation popup when stopping the dashcam.
+7. **Collaborative Playback (Collab Feature)**: Added a passenger queue sharing flow using a PWA (scanned via QR code) to submit songs. Modified Dart/Kotlin communication to use Android's `MediaSessionManager` (`playFromMediaSession` invoking `transportControls.playFromUri` or `playFromSearch` on YT Music) to play songs seamlessly in the background without foregrounding or flashing the YT Music app.
+8. **YT Music Song-Version Resolution**: Added a nested Innertube API search query in `youtube_service.dart` to fetch the specific audio-only "song" version's video ID instead of YouTube music videos, preventing background playback interruptions and long monologue intros (e.g., Lana Del Rey's "Ride").
 
 ---
 
 ## 🛠️ Next Steps & Roadmap
+* [ ] Fix YT Music song resolution matching logic (currently resolving incorrect songs due to search/metadata mismatch).
 * [ ] Verify the auto-foregrounding behavior on the target Android tablet.
 * [ ] Integrate Bluetooth connection listener triggers to auto-launch the Welcome overlay.
 * [ ] Cache the tracked chat histories in local preferences (`SharedPreferences`) so they survive application restarts.
