@@ -63,6 +63,20 @@ if (currentSession && typeof io !== 'undefined') {
   let sortableInstance = null;
   let isQueueSyncing = false;
   let currentPlayingTitle = "";
+  let queuePendingTimeout = null;
+
+  // Grey the queue out after a media action (skip / prev / play-pause / tap-to-play)
+  // until the dashboard confirms via now_playing_updated / play_state_updated —
+  // same "pending" feel as reordering, so it feels less janky.
+  function setQueuePending() {
+    document.getElementById('queueList').style.opacity = '0.5';
+    clearTimeout(queuePendingTimeout);
+    queuePendingTimeout = setTimeout(clearQueuePending, 4000); // safety: never stuck
+  }
+  function clearQueuePending() {
+    clearTimeout(queuePendingTimeout);
+    document.getElementById('queueList').style.opacity = '1';
+  }
 
   socket.on('connect', () => {
     socket.emit('join_passenger', currentSession);
@@ -77,6 +91,7 @@ if (currentSession && typeof io !== 'undefined') {
 
   socket.on('now_playing_updated', (title) => {
     currentPlayingTitle = title;
+    clearQueuePending();
     renderQueue();
   });
 
@@ -132,6 +147,7 @@ if (currentSession && typeof io !== 'undefined') {
         li.addEventListener('click', (e) => {
           if (e.target.closest('.controls')) return; // ignore edit-control taps
           socket.emit('passenger_play_song', item.id);
+          setQueuePending();
         });
       }
       list.appendChild(li);
@@ -175,19 +191,27 @@ if (currentSession && typeof io !== 'undefined') {
   const ICON_PAUSE = '<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
   let isPlaying = true; // Optimistic: controls only show while media is active
 
-  btnPrev.addEventListener('click', () => socket.emit('passenger_media_action', 'previous'));
+  btnPrev.addEventListener('click', () => {
+    socket.emit('passenger_media_action', 'previous');
+    setQueuePending();
+  });
   btnPlayPause.addEventListener('click', () => {
     socket.emit('passenger_media_action', 'playPause');
     // Optimistic flip for snappy feedback; the dashboard confirms via play_state_updated.
     isPlaying = !isPlaying;
     btnPlayPause.innerHTML = isPlaying ? ICON_PAUSE : ICON_PLAY;
+    setQueuePending();
   });
-  btnNext.addEventListener('click', () => socket.emit('passenger_media_action', 'next'));
+  btnNext.addEventListener('click', () => {
+    socket.emit('passenger_media_action', 'next');
+    setQueuePending();
+  });
 
   // Authoritative play/pause state pushed from the dashboard.
   socket.on('play_state_updated', (playing) => {
     isPlaying = !!playing;
     btnPlayPause.innerHTML = isPlaying ? ICON_PAUSE : ICON_PLAY;
+    clearQueuePending();
   });
 
   document.addEventListener('click', (e) => {

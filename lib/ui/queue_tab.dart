@@ -106,32 +106,44 @@ class _QueueTabState extends State<QueueTab> {
     return Row(
       children: [
         _buildCollabToggle(collab, theme),
-        const Spacer(),
-        _iconBtn(
-          icon: Icons.qr_code,
-          color: _showQrCodeOverlay ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
-          tooltip: 'Show QR Code',
-          onTap: () => setState(() => _showQrCodeOverlay = !_showQrCodeOverlay),
-        ),
-        _iconBtn(
-          icon: collab.allowEditing ? Icons.edit : Icons.edit_off,
-          color: collab.allowEditing ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
-          tooltip: 'Allow Passenger Editing',
-          onTap: () => collab.setAllowEditing(!collab.allowEditing),
-        ),
-        _iconBtn(
-          icon: collab.allowMediaControl ? Icons.play_circle_outline : Icons.not_interested,
-          color: collab.allowMediaControl ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
-          tooltip: 'Allow Media Control',
-          onTap: () => collab.setAllowMediaControl(!collab.allowMediaControl),
-        ),
-        if (ytService.currentQueue.isNotEmpty)
-          _iconBtn(
-            icon: Icons.delete_sweep,
-            color: Colors.redAccent,
-            tooltip: 'Clear Queue',
-            onTap: () => _confirmClearQueue(collab),
+        const SizedBox(width: 8),
+        // Wrap so the icons take the remaining width and flow to a second line
+        // on narrow panels instead of overflowing horizontally.
+        Expanded(
+          child: Wrap(
+            alignment: WrapAlignment.end,
+            spacing: 2,
+            runSpacing: 2,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              _iconBtn(
+                icon: Icons.qr_code,
+                color: _showQrCodeOverlay ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
+                tooltip: 'Show QR Code',
+                onTap: () => setState(() => _showQrCodeOverlay = !_showQrCodeOverlay),
+              ),
+              _iconBtn(
+                icon: collab.allowEditing ? Icons.edit : Icons.edit_off,
+                color: collab.allowEditing ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
+                tooltip: 'Allow Passenger Editing',
+                onTap: () => collab.setAllowEditing(!collab.allowEditing),
+              ),
+              _iconBtn(
+                icon: collab.allowMediaControl ? Icons.play_circle_outline : Icons.not_interested,
+                color: collab.allowMediaControl ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
+                tooltip: 'Allow Media Control',
+                onTap: () => collab.setAllowMediaControl(!collab.allowMediaControl),
+              ),
+              if (ytService.currentQueue.isNotEmpty)
+                _iconBtn(
+                  icon: Icons.delete_sweep,
+                  color: Colors.redAccent,
+                  tooltip: 'Clear Queue',
+                  onTap: () => _confirmClearQueue(collab),
+                ),
+            ],
           ),
+        ),
       ],
     );
   }
@@ -191,62 +203,76 @@ class _QueueTabState extends State<QueueTab> {
   }
 
   Widget _buildQrScreen(CollabService collab, ThemeData theme, Color onSurface) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: QrImageView(
-            data: collab.shareUrl,
-            version: QrVersions.auto,
-            size: 110.0,
-            backgroundColor: Colors.white,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          "Session: ${collab.sessionId}",
-          style: TextStyle(color: onSurface, fontSize: 16, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          "Scan to add songs to the collab playlist",
-          style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 11),
-        ),
-        const SizedBox(height: 16),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            ElevatedButton.icon(
-              onPressed: () => setState(() => _showQrCodeOverlay = false),
-              icon: const Icon(Icons.arrow_back, size: 18),
-              label: const Text("BACK", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.white24,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-              ),
+    // Centre the content when the panel is tall enough, but allow scrolling on
+    // short panels so it never overflows vertically.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: QrImageView(
+                    data: collab.shareUrl,
+                    version: QrVersions.auto,
+                    size: 96.0,
+                    backgroundColor: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  "Session: ${collab.sessionId}",
+                  style: TextStyle(color: onSurface, fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  "Scan to add songs to the collab playlist",
+                  style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 11),
+                ),
+                const SizedBox(height: 14),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 10,
+                  runSpacing: 8,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: () => setState(() => _showQrCodeOverlay = false),
+                      icon: const Icon(Icons.arrow_back, size: 18),
+                      label: const Text("BACK", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white24,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                      ),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: () => _confirmNewSession(collab),
+                      icon: const Icon(Icons.refresh, size: 18),
+                      label: const Text("NEW SESSION", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: theme.colorScheme.primary,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+              ],
             ),
-            const SizedBox(width: 12),
-            ElevatedButton.icon(
-              onPressed: () => _confirmNewSession(collab),
-              icon: const Icon(Icons.refresh, size: 18),
-              label: const Text("NEW SESSION", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: theme.colorScheme.primary,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-              ),
-            ),
-          ],
-        ),
-      ],
+          ),
+        );
+      },
     );
   }
 
