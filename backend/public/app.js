@@ -114,8 +114,12 @@ if (currentSession && typeof io !== 'undefined') {
         </div>
         ${canEdit ? `
           <div class="controls">
-            <button onclick="deleteSong('${item.id}')" style="background: rgba(255,0,0,0.2); color: #ff4444; margin-right: 8px;">✕</button>
-            <div class="drag-handle" style="font-size: 20px; color: #888; cursor: grab; padding: 4px;">☰</div>
+            <button class="icon-btn delete-btn" onclick="deleteSong('${item.id}')" aria-label="Remove from queue">
+              <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+            </button>
+            <div class="drag-handle" aria-label="Drag to reorder">
+              <svg viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
+            </div>
           </div>
         ` : ''}
       `;
@@ -156,9 +160,24 @@ if (currentSession && typeof io !== 'undefined') {
   const btnPlayPause = document.getElementById('btnPlayPause');
   const btnNext = document.getElementById('btnNext');
 
+  const ICON_PLAY = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+  const ICON_PAUSE = '<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
+  let isPlaying = true; // Optimistic: controls only show while media is active
+
   btnPrev.addEventListener('click', () => socket.emit('passenger_media_action', 'previous'));
-  btnPlayPause.addEventListener('click', () => socket.emit('passenger_media_action', 'playPause'));
+  btnPlayPause.addEventListener('click', () => {
+    socket.emit('passenger_media_action', 'playPause');
+    // Optimistic flip for snappy feedback; the dashboard confirms via play_state_updated.
+    isPlaying = !isPlaying;
+    btnPlayPause.innerHTML = isPlaying ? ICON_PAUSE : ICON_PLAY;
+  });
   btnNext.addEventListener('click', () => socket.emit('passenger_media_action', 'next'));
+
+  // Authoritative play/pause state pushed from the dashboard.
+  socket.on('play_state_updated', (playing) => {
+    isPlaying = !!playing;
+    btnPlayPause.innerHTML = isPlaying ? ICON_PAUSE : ICON_PLAY;
+  });
 
   document.addEventListener('click', (e) => {
     const searchResultsBox = document.getElementById('searchResults');

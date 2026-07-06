@@ -132,48 +132,101 @@
     .search-info { flex: 1; overflow: hidden; }
     .search-title { font-weight: 600; font-size: 13px; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #fff; }
     .search-artist { font-size: 11px; color: rgba(255, 255, 255, 0.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    ul { list-style: none; padding: 0; margin: 0; }
+
+    /* --- Queue item edit controls --- */
     .queue-item .controls {
       display: flex;
-      gap: 8px;
-      margin-left: 12px;
+      align-items: center;
+      gap: 4px;
+      margin-left: 8px;
     }
-    ul { list-style: none; padding: 0; margin: 0; }
-    .controls { display: flex; gap: 4px; }
-    .controls button { padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+    .icon-btn {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255, 255, 255, 0.06);
+      border: none;
+      color: #9a9a9a;
+      cursor: pointer;
+      padding: 0;
+      transition: background 0.2s ease, color 0.2s ease, transform 0.12s ease;
+    }
+    .icon-btn svg { width: 18px; height: 18px; fill: currentColor; display: block; }
+    .icon-btn.delete-btn:hover { background: rgba(255, 82, 82, 0.16); color: #ff5252; }
+    .icon-btn.delete-btn:active { transform: scale(0.88); }
+    .drag-handle {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #6a6a6a;
+      cursor: grab;
+      touch-action: none;
+      transition: color 0.2s ease, background 0.2s ease;
+    }
+    .drag-handle svg { width: 20px; height: 20px; fill: currentColor; display: block; }
+    .drag-handle:hover { color: #bbb; background: rgba(255, 255, 255, 0.06); }
+    .drag-handle:active { cursor: grabbing; }
+    .sortable-ghost { opacity: 0.4; }
+    .sortable-chosen { background: rgba(255, 255, 255, 0.12); }
+
+    /* --- Bottom media control bar --- */
     .media-controls {
       position: fixed;
       bottom: 0;
       left: 0;
       right: 0;
-      background: rgba(30, 30, 40, 0.95);
-      backdrop-filter: blur(10px);
-      padding: 16px;
-      display: flex;
-      justify-content: center;
-      gap: 24px;
-      border-top: 1px solid rgba(255, 255, 255, 0.1);
-      z-index: 2000;
-      box-shadow: 0 -4px 20px rgba(0,0,0,0.5);
-      transition: transform 0.3s ease;
-    }
-    .media-controls.hidden {
-      transform: translateY(100%);
-      display: flex !important; /* Keep it flex to allow transform animation */
-    }
-    .media-btn {
-      background: rgba(255, 255, 255, 0.1);
-      border-radius: 50%;
-      width: 56px;
-      height: 56px;
+      background: rgba(24, 24, 32, 0.92);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 24px;
-      color: white;
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      gap: 28px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      z-index: 2000;
+      box-shadow: 0 -8px 32px rgba(0,0,0,0.45);
+      transition: transform 0.3s ease;
     }
-    .media-btn:active { background: rgba(255, 255, 255, 0.2); transform: scale(0.95); }
-    body { padding-bottom: 90px; } /* Space for media controls */
+    .media-controls.hidden {
+      transform: translateY(120%);
+      display: flex !important; /* Keep it flex to allow transform animation */
+    }
+    .media-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 50%;
+      width: 52px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      cursor: pointer;
+      padding: 0;
+      transition: background 0.2s ease, transform 0.12s ease;
+    }
+    .media-btn svg { width: 24px; height: 24px; fill: currentColor; display: block; }
+    .media-btn:hover { background: rgba(255, 255, 255, 0.14); }
+    .media-btn:active { transform: scale(0.9); }
+    .media-btn.primary {
+      width: 66px;
+      height: 66px;
+      background: #1DB954;
+      color: #0a0a0a;
+      border: none;
+      box-shadow: 0 6px 20px rgba(29, 185, 84, 0.4);
+    }
+    .media-btn.primary svg { width: 30px; height: 30px; }
+    .media-btn.primary:hover { background: #1ed760; }
+    body { padding-bottom: 110px; } /* Space for media controls */
   </style>
 </head>
 <body>
@@ -199,12 +252,18 @@
   <center><button id="installBtn" style="display: none; margin-top: 40px;">Install App to Share from Spotify</button></center>
 
   <div id="mediaControls" class="media-controls hidden">
-    <button class="media-btn" id="btnPrev">⏮️</button>
-    <button class="media-btn" id="btnPlayPause">⏯️</button>
-    <button class="media-btn" id="btnNext">⏭️</button>
+    <button class="media-btn" id="btnPrev" aria-label="Previous track">
+      <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zM9 12l9 6V6z"/></svg>
+    </button>
+    <button class="media-btn primary" id="btnPlayPause" aria-label="Play or pause">
+      <svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+    </button>
+    <button class="media-btn" id="btnNext" aria-label="Next track">
+      <svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 6v12l9-6z"/></svg>
+    </button>
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=2"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>

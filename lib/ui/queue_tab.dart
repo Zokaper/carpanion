@@ -31,6 +31,7 @@ class _QueueTabState extends State<QueueTab> {
   late DashboardProvider _dashboard;
   Timer? _pollTimer;
   String _lastTrack = '';
+  bool _lastPlaying = false;
   int _currentPlayingIndex = -1;
   
   final ScrollController _scrollController = ScrollController();
@@ -59,6 +60,14 @@ class _QueueTabState extends State<QueueTab> {
   }
 
   void _onDashboardUpdate() {
+    // Sync play/pause state to passengers whenever it changes on the dashboard.
+    if (_dashboard.isPlaying != _lastPlaying) {
+      _lastPlaying = _dashboard.isPlaying;
+      if (socket?.connected == true) {
+        socket!.emit('update_play_state', _lastPlaying);
+      }
+    }
+
     if (_dashboard.currentTrack != _lastTrack) {
       if (mounted) {
         setState(() {
@@ -174,6 +183,7 @@ class _QueueTabState extends State<QueueTab> {
     socket!.on('request_permissions', (_) {
       socket!.emit('update_permissions', _allowEditing);
       socket!.emit('update_media_permissions', _allowMediaControl);
+      socket!.emit('update_play_state', _dashboard.isPlaying);
     });
 
     socket!.on('passenger_media_action', (action) async {

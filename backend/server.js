@@ -135,6 +135,15 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('update_play_state', (isPlaying) => {
+    for (const [sessionId, sockId] of activeSessions.entries()) {
+      if (sockId === socket.id) {
+        io.to(sessionId).emit('play_state_updated', isPlaying);
+        break;
+      }
+    }
+  });
+
   socket.on('update_permissions', (canEdit) => {
     for (const [sessionId, sockId] of activeSessions.entries()) {
       if (sockId === socket.id) {
