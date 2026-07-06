@@ -58,6 +58,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
 if (currentSession && typeof io !== 'undefined') {
   const socket = io();
   let canEdit = false;
+  let mediaAllowed = false;
   let currentQueueState = [];
   let sortableInstance = null;
   let isQueueSyncing = false;
@@ -85,11 +86,13 @@ if (currentSession && typeof io !== 'undefined') {
   });
 
   socket.on('media_permissions_updated', (canControlMedia) => {
-    if (canControlMedia) {
+    mediaAllowed = !!canControlMedia;
+    if (mediaAllowed) {
       mediaControls.classList.remove('hidden');
     } else {
       mediaControls.classList.add('hidden');
     }
+    renderQueue(); // re-render so queue rows become (un)tappable
   });
 
   function renderQueue() {
@@ -123,6 +126,14 @@ if (currentSession && typeof io !== 'undefined') {
           </div>
         ` : ''}
       `;
+      // Tap a row to play it directly (only when the dashboard allows media control).
+      if (mediaAllowed) {
+        li.classList.add('tappable');
+        li.addEventListener('click', (e) => {
+          if (e.target.closest('.controls')) return; // ignore edit-control taps
+          socket.emit('passenger_play_song', item.id);
+        });
+      }
       list.appendChild(li);
     });
 
@@ -198,38 +209,22 @@ if (currentSession && typeof io !== 'undefined') {
     }
     clearTimeout(searchTimeout);
     searchTimeout = setTimeout(() => {
-      if (searchModeToggle.checked) {
-        socket.emit('request_search', query);
-      } else {
-        fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=10`)
-          .then(res => res.json())
-          .then(data => {
-            renderSearchResults(data.results.map(item => ({
-              id: item.trackId,
-              title: item.trackName,
-              channel: item.artistName,
-              thumbnail: item.artworkUrl100 || item.artworkUrl60,
-              isItunes: true
-            })));
-          })
-          .catch(err => console.error(err));
-      }
-    }, 500);
+      // Default: YT Music song search (clean, well-ranked). Toggle: YouTube demo search.
+      socket.emit('request_search', {
+        query,
+        source: searchModeToggle.checked ? 'youtube' : 'ytmusic',
+      });
+    }, 400);
   });
 
   socket.on('search_results', (results) => {
-    if (searchModeToggle.checked) {
-      renderSearchResults(results.map(item => ({
-        ...item,
-        isItunes: false
-      })));
-    }
+    renderSearchResults(results || []);
   });
 
   function renderSearchResults(results) {
-    // Drop late-arriving network responses if the user has already cleared the search or tapped "Add"
+    // Drop late-arriving responses if the user has already cleared the search or tapped "Add"
     if (!searchInput.value.trim()) return;
-    
+
     const container = document.getElementById('searchResults');
     container.innerHTML = '';
     if (results.length === 0) {
@@ -237,27 +232,33 @@ if (currentSession && typeof io !== 'undefined') {
     } else {
       results.forEach(item => {
         const li = document.createElement('li');
-        const escapedTitle = item.title.replace(/'/g, "\\'").replace(/"/g, "&quot;");
-        const escapedChannel = item.channel.replace(/'/g, "\\'").replace(/"/g, "&quot;");
         li.innerHTML = `
-          <img src="${item.thumbnail}">
+          <img src="${item.thumbnail || ''}">
           <div class="search-info">
-            <div class="search-title">${item.title}</div>
-            <div class="search-artist">${item.channel}</div>
+            <div class="search-title">${item.title || ''}</div>
+            <div class="search-artist">${item.channel || ''}</div>
           </div>
-          <button onclick="addResolvedSong('${item.videoId || ''}', '${escapedTitle}', '${escapedChannel}', ${item.isItunes})">Add</button>
+          <button class="add-btn">Add</button>
         `;
+        li.querySelector('.add-btn').addEventListener('click', () => addPickedSong(item));
         container.appendChild(li);
       });
     }
     container.classList.remove('hidden');
   }
 
-  window.addResolvedSong = (videoId, title, artist, isItunes) => {
-    if (isItunes) {
-      socket.emit('passenger_search_and_add_song', `${title} ${artist}`);
-    } else {
-      socket.emit('passenger_add_song', videoId);
+  function addPickedSong(item) {
+    if (item.resolved && item.videoId) {
+      // Exact YT Music song already resolved — add directly (what you see is what you get).
+      socket.emit('passenger_add_resolved', {
+        videoId: item.videoId,
+        title: item.title || '',
+        artist: item.channel || '',
+        thumbnail: item.thumbnail || '',
+      });
+    } else if (item.videoId) {
+      // YouTube demo result — let the dashboard resolve it to the song version.
+      socket.emit('passenger_add_song', item.videoId);
     }
     clearTimeout(searchTimeout);
     const searchResultsBox = document.getElementById('searchResults');
@@ -270,5 +271,5 @@ if (currentSession && typeof io !== 'undefined') {
       document.getElementById('status').innerText = '';
       document.getElementById('status').className = '';
     }, 3000);
-  };
+  }
 }

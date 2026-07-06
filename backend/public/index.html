@@ -106,6 +106,8 @@
       transition: background 0.2s;
     }
     .queue-item:hover { background: rgba(255, 255, 255, 0.1); }
+    .queue-item.tappable { cursor: pointer; }
+    .queue-item.tappable:active { background: rgba(255, 255, 255, 0.14); }
     .queue-item img {
       width: 48px;
       height: 48px;
@@ -264,6 +266,6 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

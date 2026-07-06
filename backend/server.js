@@ -58,12 +58,27 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('request_search', (query) => {
+  socket.on('request_search', (payload) => {
     const sessionId = socket.data.sessionId;
     const carSocketId = activeSessions.get(sessionId);
     if (carSocketId) {
-      io.to(carSocketId).emit('request_search', { passengerId: socket.id, query });
+      // payload may be a bare query string (legacy) or { query, source }.
+      const query = typeof payload === 'string' ? payload : (payload && payload.query) || '';
+      const source = (payload && payload.source) || 'ytmusic';
+      io.to(carSocketId).emit('request_search', { passengerId: socket.id, query, source });
     }
+  });
+
+  socket.on('passenger_play_song', (id) => {
+    const sessionId = socket.data.sessionId;
+    const carSocketId = activeSessions.get(sessionId);
+    if (carSocketId) io.to(carSocketId).emit('passenger_play_song', id);
+  });
+
+  socket.on('passenger_add_resolved', (song) => {
+    const sessionId = socket.data.sessionId;
+    const carSocketId = activeSessions.get(sessionId);
+    if (carSocketId) io.to(carSocketId).emit('passenger_add_resolved', song);
   });
 
   socket.on('passenger_delete_song', (playlistItemId) => {

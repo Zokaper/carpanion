@@ -1,15 +1,12 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import 'package:socket_io_client/socket_io_client.dart' as IO;
-import 'package:android_intent_plus/android_intent.dart';
-import 'package:flutter_media_controller/flutter_media_controller.dart';
 import '../services/youtube_service.dart';
-import '../main.dart';
+import '../services/collab_service.dart';
 
+/// Thin view over [CollabService]. All collab state (socket, playback, session,
+/// auto-DJ) lives in the service so it survives this widget being disposed when
+/// the user navigates away. This widget only renders and forwards user actions.
 class QueueTab extends StatefulWidget {
   const QueueTab({super.key});
 
@@ -18,622 +15,381 @@ class QueueTab extends StatefulWidget {
 }
 
 class _QueueTabState extends State<QueueTab> {
-  final String backendUrl = "https://carpanion.onrender.com";
-  static String? _persistedSessionId;
-  late String sessionId;
-  IO.Socket? socket;
-  final List<String> _recentlyAdded = [];
-  bool _queueStarted = false;
+  // Ephemeral view state — intentionally resets to the queue view on rebuild so
+  // the QR screen never shows automatically.
   bool _showQrCodeOverlay = false;
-  bool _allowEditing = false;
-  bool _allowMediaControl = false;
-  late YouTubeService _ytService;
-  late DashboardProvider _dashboard;
-  Timer? _pollTimer;
-  String _lastTrack = '';
-  bool _lastPlaying = false;
-  int _currentPlayingIndex = -1;
-  
   final ScrollController _scrollController = ScrollController();
   bool _userScrolled = false;
+  int _lastScrolledIndex = -1;
 
   @override
-  void initState() {
-    super.initState();
-    if (_persistedSessionId == null) {
-      _persistedSessionId = _generateSessionId();
-    }
-    sessionId = _persistedSessionId!;
-    _ytService = Provider.of<YouTubeService>(context, listen: false);
-    _dashboard = Provider.of<DashboardProvider>(context, listen: false);
-    
-    _ytService.addListener(_onYouTubeServiceUpdate);
-    _dashboard.addListener(_onDashboardUpdate);
-    
-    _connectSocket();
-    
-    // Initial fetch and start polling every 10 seconds to catch external edits
-    _ytService.fetchQueue();
-    _pollTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (mounted) _ytService.fetchQueue();
-    });
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 
-  void _onDashboardUpdate() {
-    // Sync play/pause state to passengers whenever it changes on the dashboard.
-    if (_dashboard.isPlaying != _lastPlaying) {
-      _lastPlaying = _dashboard.isPlaying;
-      if (socket?.connected == true) {
-        socket!.emit('update_play_state', _lastPlaying);
-      }
-    }
-
-    if (_dashboard.currentTrack != _lastTrack) {
-      if (mounted) {
-        setState(() {
-          _lastTrack = _dashboard.currentTrack;
-        });
-      } else {
-        _lastTrack = _dashboard.currentTrack;
-      }
-      
-      if (socket?.connected == true) {
-        socket!.emit('update_playing_status', _lastTrack);
-      }
-      
-      if (_queueStarted) {
-        int index = _ytService.currentQueue.indexWhere((item) {
-          final qTitle = (item['title'] ?? '').toLowerCase();
-          final dTitle = _lastTrack.toLowerCase();
-          return qTitle == dTitle || qTitle.contains(dTitle) || dTitle.contains(qTitle);
-        });
-
-        if (index != -1) {
-          _currentPlayingIndex = index;
-        } else {
-          // YT Music track changed to something not in the queue.
-          if (_currentPlayingIndex != -1 && _ytService.currentQueue.length > _currentPlayingIndex + 1) {
-            _currentPlayingIndex++;
-            debugPrint("Auto-DJ: Playing next song at index $_currentPlayingIndex");
-            final nextVideoId = _ytService.currentQueue[_currentPlayingIndex]['videoId'];
-            _playQueueAt(nextVideoId, _currentPlayingIndex);
-          } else if (_currentPlayingIndex != -1 && _ytService.currentQueue.length <= _currentPlayingIndex + 1) {
-            _currentPlayingIndex = -1; // Reached end of queue
-          }
-        }
-      }
-
-      _scrollToPlayingTrack();
-    }
-  }
-
-  void _scrollToPlayingTrack() {
-    if (_userScrolled || !_scrollController.hasClients) return;
-    int index = _ytService.currentQueue.indexWhere((item) {
-      final qTitle = (item['title'] ?? '').toLowerCase();
-      final dTitle = _lastTrack.toLowerCase();
-      return qTitle == dTitle || qTitle.contains(dTitle) || dTitle.contains(qTitle);
-    });
-    if (index != -1) {
-      // Calculate approximate position to center the item (approx 60px height per item)
-      final position = (index * 60.0) - (150.0);
+  void _maybeAutoScroll(int playingIndex) {
+    if (playingIndex == _lastScrolledIndex) return;
+    _lastScrolledIndex = playingIndex;
+    if (playingIndex < 0) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_userScrolled || !_scrollController.hasClients) return;
+      final position = (playingIndex * 64.0) - 150.0;
       _scrollController.animateTo(
         position > 0 ? position : 0,
         duration: const Duration(milliseconds: 500),
         curve: Curves.easeInOut,
       );
-    }
-  }
-
-  void _onYouTubeServiceUpdate() {
-    if (socket?.connected == true) {
-      socket!.emit('update_queue', jsonEncode(_ytService.currentQueue));
-    }
-  }
-
-  String _generateSessionId() {
-    final rand = Random();
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    return List.generate(6, (index) => chars[rand.nextInt(chars.length)]).join();
-  }
-
-  void _connectSocket() {
-    socket = IO.io(backendUrl, IO.OptionBuilder()
-      .setTransports(['websocket'])
-      .disableAutoConnect()
-      .build()
-    );
-
-    // Clear any cached listeners from previous hot reloads before attaching new ones
-    socket!.clearListeners();
-    socket!.connect();
-
-    socket!.onConnect((_) {
-      debugPrint("Connected to backend, registering session: $sessionId");
-      socket!.emit('register_session', sessionId);
-    });
-
-    socket!.on('add_song', (data) async {
-      debugPrint("Received add_song event: $data");
-      if (data['videoId'] != null) {
-        final title = data['title'] ?? 'Unknown Song';
-        final success = await _ytService.addVideoToPlaylist(
-          data['videoId'],
-          title: data['title'] ?? '',
-        );
-        if (success && mounted) {
-          setState(() {
-            _recentlyAdded.insert(0, title);
-            if (_recentlyAdded.length > 5) _recentlyAdded.removeLast();
-          });
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Added to Queue: $title'), duration: const Duration(seconds: 2)),
-          );
-          if (!_queueStarted && _ytService.currentQueue.isNotEmpty) {
-            _playQueue();
-          }
-        }
-      }
-    });
-
-    socket!.on('request_queue', (_) {
-      socket!.emit('update_queue', jsonEncode(_ytService.currentQueue));
-    });
-
-    socket!.on('request_permissions', (_) {
-      socket!.emit('update_permissions', _allowEditing);
-      socket!.emit('update_media_permissions', _allowMediaControl);
-      socket!.emit('update_play_state', _dashboard.isPlaying);
-    });
-
-    socket!.on('passenger_media_action', (action) async {
-      if (_allowMediaControl) {
-        try {
-          if (action == 'playPause') {
-            await FlutterMediaController.togglePlayPause();
-          } else if (action == 'next') {
-            if (_queueStarted && _currentPlayingIndex != -1 && _ytService.currentQueue.length > _currentPlayingIndex + 1) {
-              _currentPlayingIndex++;
-              _playQueueAt(_ytService.currentQueue[_currentPlayingIndex]['videoId'], _currentPlayingIndex);
-            } else {
-              await FlutterMediaController.nextTrack();
-            }
-          } else if (action == 'previous') {
-            if (_queueStarted && _currentPlayingIndex > 0) {
-              _currentPlayingIndex--;
-              _playQueueAt(_ytService.currentQueue[_currentPlayingIndex]['videoId'], _currentPlayingIndex);
-            } else {
-              await FlutterMediaController.previousTrack();
-            }
-          }
-        } catch (e) {
-          debugPrint("Media action error: $e");
-        }
-      }
-    });
-
-    socket!.on('passenger_search_and_add_song', (query) async {
-      debugPrint("Received passenger_search_and_add_song event: $query");
-      final success = await _ytService.searchAndAddSong(query);
-      if (success && mounted) {
-        setState(() {
-          _recentlyAdded.insert(0, query);
-          if (_recentlyAdded.length > 5) _recentlyAdded.removeLast();
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Resolved & Added: $query'), duration: const Duration(seconds: 2)),
-        );
-        if (!_queueStarted && _ytService.currentQueue.isNotEmpty) {
-            _playQueue();
-          }
-      }
-    });
-
-    socket!.on('request_search', (data) async {
-      final passengerId = data['passengerId'];
-      final query = data['query'];
-      final results = await _ytService.searchSongs(query);
-      socket!.emit('search_results', {
-        'passengerId': passengerId,
-        'results': results,
-      });
-    });
-
-    socket!.on('passenger_delete_song', (playlistItemId) async {
-      if (_allowEditing) {
-        await _ytService.deleteSong(playlistItemId);
-      }
-    });
-
-    socket!.on('passenger_reorder_song', (data) async {
-      if (_allowEditing) {
-        await _ytService.reorderSong(data['playlistItemId'], data['newPosition']);
-      }
-    });
-
-    socket!.onDisconnect((_) => debugPrint('Disconnected from backend'));
-  }
-
-  @override
-  void dispose() {
-    _pollTimer?.cancel();
-    socket?.clearListeners();
-    socket?.disconnect();
-    socket?.dispose();
-    _ytService.removeListener(_onYouTubeServiceUpdate);
-    _dashboard.removeListener(_onDashboardUpdate);
-    _scrollController.dispose();
-    super.dispose();
-  }
-
-  void _playQueue() {
-    if (_ytService.currentQueue.isEmpty) return;
-    setState(() {
-      _queueStarted = true;
-      _showQrCodeOverlay = false;
-      _currentPlayingIndex = 0;
-    });
-    _playQueueAt(_ytService.currentQueue[0]['videoId'], 0);
-  }
-
-  void _playQueueAt(String videoId, int index) {
-    _currentPlayingIndex = index;
-    final item = (index >= 0 && index < _ytService.currentQueue.length) 
-        ? _ytService.currentQueue[index] 
-        : null;
-    final query = item != null ? '${item['title']} ${item['artist']}' : videoId;
-
-    // Primary: Use MediaSession transport controls (no UI flash, audio-only)
-    DashboardProvider.platform.invokeMethod('playFromMediaSession', {
-      'videoId': videoId,
-      'query': query,
-    }).then((result) {
-      final success = result is Map && result['success'] == true;
-      if (success) {
-        debugPrint("Collab: Playing via MediaSession (${result['method']}): $query");
-      } else {
-        // Fallback: Launch via intent (will flash YT Music briefly)
-        debugPrint("Collab: MediaSession failed (${result is Map ? result['error'] : 'unknown'}), falling back to intent");
-        _playViaIntent(query);
-      }
-    }).catchError((e) {
-      debugPrint("Collab: MediaSession error: $e, falling back to intent");
-      _playViaIntent(query);
-    });
-  }
-
-  void _playViaIntent(String query) {
-    final intent = AndroidIntent(
-      action: 'android.media.action.MEDIA_PLAY_FROM_SEARCH',
-      arguments: <String, dynamic>{
-        'query': query,
-      },
-      package: 'com.google.android.apps.youtube.music',
-    );
-    intent.launch().catchError((e) {
-      debugPrint("Could not launch targeted YT Music intent: $e");
-    });
-    
-    if (mounted) {
-      Provider.of<DashboardProvider>(context, listen: false).setWaitingForMusic();
-    }
-    
-    // Pull Dashboard back to front after intent launches YT Music
-    Future.delayed(const Duration(seconds: 2), () {
-      final backIntent = AndroidIntent(
-        action: 'action_main',
-        package: 'com.example.car_dashboard',
-        componentName: 'com.example.car_dashboard.MainActivity',
-        flags: [268435456, 131072], // FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_REORDER_TO_FRONT
-      );
-      backIntent.launch().catchError((e) => debugPrint("Could not reorder Dashboard to front: $e"));
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    final ytService = Provider.of<YouTubeService>(context);
+    final ytService = context.watch<YouTubeService>();
+    final collab = context.watch<CollabService>();
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
+
+    if (!ytService.isSignedIn) {
+      return _buildSignIn(ytService);
+    }
+
+    final playingIndex = collab.currentPlayingIndex;
+    _maybeAutoScroll(playingIndex);
 
     return Padding(
       padding: const EdgeInsets.only(top: 4.0),
       child: Column(
         children: [
-          if (!ytService.isSignedIn)
-            Padding(
-              padding: const EdgeInsets.only(top: 32.0),
-              child: Center(
-                child: ElevatedButton.icon(
-                  onPressed: () async {
-                    try {
-                      await ytService.signIn();
-                    } catch (e) {
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text("Google Sign-In failed: $e\nEnsure SHA-1 is configured in Google Cloud Console."),
-                            duration: const Duration(seconds: 4),
-                          ),
-                        );
-                      }
-                    }
-                  },
-                  icon: const Icon(Icons.login),
-                  label: const Text("Sign in with Google"),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          _buildHeader(collab, ytService, theme, onSurface),
+          const SizedBox(height: 8),
+          Expanded(
+            child: _showQrCodeOverlay
+                ? _buildQrScreen(collab, theme, onSurface)
+                : _buildQueueList(collab, ytService, theme, onSurface, playingIndex),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSignIn(YouTubeService ytService) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 32.0),
+      child: Center(
+        child: ElevatedButton.icon(
+          onPressed: () async {
+            try {
+              await ytService.signIn();
+            } catch (e) {
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text("Google Sign-In failed: $e\nEnsure SHA-1 is configured in Google Cloud Console."),
+                    duration: const Duration(seconds: 4),
                   ),
+                );
+              }
+            }
+          },
+          icon: const Icon(Icons.login),
+          label: const Text("Sign in with Google"),
+          style: ElevatedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader(CollabService collab, YouTubeService ytService, ThemeData theme, Color onSurface) {
+    return Row(
+      children: [
+        _buildCollabToggle(collab, theme),
+        const Spacer(),
+        _iconBtn(
+          icon: Icons.qr_code,
+          color: _showQrCodeOverlay ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
+          tooltip: 'Show QR Code',
+          onTap: () => setState(() => _showQrCodeOverlay = !_showQrCodeOverlay),
+        ),
+        _iconBtn(
+          icon: collab.allowEditing ? Icons.edit : Icons.edit_off,
+          color: collab.allowEditing ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
+          tooltip: 'Allow Passenger Editing',
+          onTap: () => collab.setAllowEditing(!collab.allowEditing),
+        ),
+        _iconBtn(
+          icon: collab.allowMediaControl ? Icons.play_circle_outline : Icons.not_interested,
+          color: collab.allowMediaControl ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
+          tooltip: 'Allow Media Control',
+          onTap: () => collab.setAllowMediaControl(!collab.allowMediaControl),
+        ),
+        if (ytService.currentQueue.isNotEmpty)
+          _iconBtn(
+            icon: Icons.delete_sweep,
+            color: Colors.redAccent,
+            tooltip: 'Clear Queue',
+            onTap: () => _confirmClearQueue(collab),
+          ),
+      ],
+    );
+  }
+
+  Widget _iconBtn({required IconData icon, required Color color, required String tooltip, required VoidCallback onTap}) {
+    return SizedBox(
+      width: 36,
+      height: 36,
+      child: IconButton(
+        icon: Icon(icon, color: color),
+        onPressed: onTap,
+        tooltip: tooltip,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(),
+        iconSize: 22,
+      ),
+    );
+  }
+
+  /// The prominent Enable/Disable Collab control — clearly highlighted when on.
+  Widget _buildCollabToggle(CollabService collab, ThemeData theme) {
+    final on = collab.enabled;
+    return Material(
+      color: on ? theme.colorScheme.primary : Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(30),
+        side: BorderSide(color: on ? theme.colorScheme.primary : Colors.white24, width: 1.5),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(30),
+        onTap: () => on ? collab.disable() : collab.enable(),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                on ? Icons.wifi_tethering : Icons.wifi_tethering_off,
+                size: 18,
+                color: on ? Colors.white : Colors.white54,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                on ? 'COLLAB ON' : 'COLLAB OFF',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.0,
+                  color: on ? Colors.white : Colors.white54,
                 ),
               ),
-            )
-          else ...[
-            if (!_queueStarted || _showQrCodeOverlay)
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: QrImageView(
-                        data: '$backendUrl/?session=$sessionId',
-                        version: QrVersions.auto,
-                        size: 100.0,
-                        backgroundColor: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      "Session: $sessionId",
-                      style: TextStyle(color: onSurface, fontSize: 16, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      "Scan to add songs to the collab playlist",
-                      style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 11),
-                    ),
-                    const SizedBox(height: 16),
-                    if (!_queueStarted)
-                      ElevatedButton.icon(
-                        onPressed: () {
-                          if (ytService.currentQueue.isEmpty) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Please add at least one song to start the collab!')),
-                            );
-                          } else {
-                            _playQueue();
-                          }
-                        },
-                        icon: const Icon(Icons.play_arrow, size: 20),
-                        label: const Text("START COLLAB", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: theme.colorScheme.primary,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                        ),
-                      )
-                    else
-                      ElevatedButton.icon(
-                        onPressed: () => setState(() => _showQrCodeOverlay = false),
-                        icon: const Icon(Icons.arrow_back, size: 20),
-                        label: const Text("BACK TO COLLAB", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white24,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                        ),
-                      ),
-                  ],
-                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildQrScreen(CollabService collab, ThemeData theme, Color onSurface) {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: QrImageView(
+            data: collab.shareUrl,
+            version: QrVersions.auto,
+            size: 110.0,
+            backgroundColor: Colors.white,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          "Session: ${collab.sessionId}",
+          style: TextStyle(color: onSurface, fontSize: 16, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          "Scan to add songs to the collab playlist",
+          style: TextStyle(color: onSurface.withOpacity(0.7), fontSize: 11),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            ElevatedButton.icon(
+              onPressed: () => setState(() => _showQrCodeOverlay = false),
+              icon: const Icon(Icons.arrow_back, size: 18),
+              label: const Text("BACK", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.white24,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
               ),
-            if (_queueStarted && !_showQrCodeOverlay) ...[
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    "NEXT UP",
-                    style: TextStyle(
-                      color: onSurface.withOpacity(0.6),
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
-                  Expanded(
-                    child: Wrap(
-                      alignment: WrapAlignment.end,
-                      spacing: 4,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        SizedBox(
-                          width: 36, height: 36,
-                          child: IconButton(
-                            icon: Icon(Icons.qr_code, color: onSurface.withOpacity(0.5)),
-                            onPressed: () => setState(() => _showQrCodeOverlay = true),
-                            tooltip: 'Show QR Code',
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                            iconSize: 22,
-                          ),
-                        ),
-                        SizedBox(
-                          width: 36, height: 36,
-                          child: IconButton(
-                            icon: Icon(_allowEditing ? Icons.edit : Icons.edit_off, color: _allowEditing ? theme.colorScheme.primary : onSurface.withOpacity(0.5)),
-                            onPressed: () {
-                              setState(() => _allowEditing = !_allowEditing);
-                              socket?.emit('update_permissions', _allowEditing);
-                            },
-                            tooltip: 'Allow Passenger Editing',
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                            iconSize: 22,
-                          ),
-                        ),
-                        SizedBox(
-                          width: 36, height: 36,
-                          child: IconButton(
-                            icon: Icon(_allowMediaControl ? Icons.play_circle_outline : Icons.not_interested, color: _allowMediaControl ? theme.colorScheme.primary : onSurface.withOpacity(0.5)),
-                            onPressed: () {
-                              setState(() => _allowMediaControl = !_allowMediaControl);
-                              socket?.emit('update_media_permissions', _allowMediaControl);
-                            },
-                            tooltip: 'Allow Media Control',
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                            iconSize: 22,
-                          ),
-                        ),
-                        if (ytService.currentQueue.isNotEmpty)
-                          SizedBox(
-                            width: 36, height: 36,
-                            child: IconButton(
-                              icon: const Icon(Icons.delete_sweep, color: Colors.redAccent),
-                              onPressed: () {
-                                showDialog(
-                                  context: context,
-                                  builder: (context) => AlertDialog(
-                                    backgroundColor: const Color(0xFF151525),
-                                    title: const Text('Clear Queue?', style: TextStyle(color: Colors.white)),
-                                    content: const Text('This will permanently delete all songs from the Collab playlist.', style: TextStyle(color: Colors.white70)),
-                                    actions: [
-                                      TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
-                                      TextButton(
-                                        onPressed: () {
-                                          Navigator.pop(context);
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            const SnackBar(content: Text('Clearing queue... Please wait.')),
-                                          );
-                                          ytService.clearPlaylist().then((_) {
-                                            if (mounted) {
-                                              setState(() {
-                                                _queueStarted = false;
-                                                _showQrCodeOverlay = true;
-                                              });
-                                              ScaffoldMessenger.of(context).showSnackBar(
-                                                const SnackBar(content: Text('Queue cleared! Please add a song to restart.')),
-                                              );
-                                            }
-                                          });
-                                        },
-                                        child: const Text('CLEAR', style: TextStyle(color: Colors.redAccent)),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              },
-                              tooltip: 'Clear Queue',
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(),
-                              iconSize: 22,
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ],
+            ),
+            const SizedBox(width: 12),
+            ElevatedButton.icon(
+              onPressed: () => _confirmNewSession(collab),
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text("NEW SESSION", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: theme.colorScheme.primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
               ),
-              const SizedBox(height: 4),
-              Expanded(
-                child: ytService.currentQueue.isEmpty
-                  ? Center(
-                      child: Text(
-                        "Collab playlist is empty.\nScan the QR code to add songs!",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: onSurface.withOpacity(0.5), fontSize: 16),
-                      ),
-                    )
-                  : Stack(
-                      children: [
-                        NotificationListener<ScrollUpdateNotification>(
-                          onNotification: (notification) {
-                            if (notification.dragDetails != null && !_userScrolled) {
-                              setState(() => _userScrolled = true);
-                            }
-                            return false;
-                          },
-                          child: Builder(
-                            builder: (context) {
-                              int playingIndex = ytService.currentQueue.indexWhere((item) {
-                                final qTitle = (item['title'] ?? '').toLowerCase();
-                                final dTitle = _lastTrack.toLowerCase();
-                                return qTitle == dTitle || qTitle.contains(dTitle) || dTitle.contains(qTitle);
-                              });
-                              return ListView.builder(
-                                controller: _scrollController,
-                                itemCount: ytService.currentQueue.length,
-                                itemBuilder: (context, index) {
-                                  final item = ytService.currentQueue[index];
-                                  final isPlaying = index == playingIndex;
-                                  
-                                  return Padding(
-                                    padding: const EdgeInsets.only(bottom: 8.0),
-                                child: Container(
-                                  decoration: isPlaying ? BoxDecoration(
-                                    color: theme.colorScheme.primary.withOpacity(0.15),
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border(left: BorderSide(color: theme.colorScheme.primary, width: 4)),
-                                  ) : null,
-                                  padding: isPlaying ? const EdgeInsets.only(left: 8.0, top: 4.0, bottom: 4.0) : EdgeInsets.zero,
-                                  child: ListTile(
-                                    contentPadding: EdgeInsets.zero,
-                                    dense: true,
-                                    leading: ClipRRect(
-                                      borderRadius: BorderRadius.circular(8),
-                                      child: Image.network(
-                                        item['thumbnail'] ?? '', 
-                                        width: 48, 
-                                        height: 48, 
-                                        fit: BoxFit.cover, 
-                                        errorBuilder: (_, __, ___) => Container(
-                                          width: 48, height: 48, color: Colors.grey.withOpacity(0.2), 
-                                          child: const Icon(Icons.music_note)
-                                        )
-                                      ),
-                                    ),
-                                    title: Text(
-                                      item['title'] ?? 'Unknown', 
-                                      maxLines: 1, 
-                                      overflow: TextOverflow.ellipsis, 
-                                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: isPlaying ? theme.colorScheme.primary : onSurface)
-                                    ),
-                                    subtitle: Text(
-                                      item['artist'] ?? 'Unknown Artist',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(fontSize: 13, color: onSurface.withOpacity(0.5)),
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
-                          );
-                        }),
-                      ),
-                      if (_userScrolled)
-                          Positioned(
-                            bottom: 16,
-                            right: 8,
-                            child: FloatingActionButton.small(
-                              backgroundColor: theme.colorScheme.primary,
-                              onPressed: () {
-                                setState(() => _userScrolled = false);
-                                _scrollToPlayingTrack();
-                              },
-                              child: const Icon(Icons.my_location, color: Colors.white),
-                            ),
-                          ),
-                      ],
-                    ),
-              ),
-            ]
+            ),
           ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildQueueList(CollabService collab, YouTubeService ytService, ThemeData theme, Color onSurface, int playingIndex) {
+    if (ytService.currentQueue.isEmpty) {
+      return Center(
+        child: Text(
+          "Collab playlist is empty.\nScan the QR code to add songs!",
+          textAlign: TextAlign.center,
+          style: TextStyle(color: onSurface.withOpacity(0.5), fontSize: 16),
+        ),
+      );
+    }
+
+    return Stack(
+      children: [
+        NotificationListener<ScrollUpdateNotification>(
+          onNotification: (notification) {
+            if (notification.dragDetails != null && !_userScrolled) {
+              setState(() => _userScrolled = true);
+            }
+            return false;
+          },
+          child: ListView.builder(
+            controller: _scrollController,
+            itemCount: ytService.currentQueue.length,
+            itemBuilder: (context, index) {
+              final item = ytService.currentQueue[index];
+              final isPlaying = index == playingIndex;
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8.0),
+                child: Container(
+                  decoration: isPlaying
+                      ? BoxDecoration(
+                          color: theme.colorScheme.primary.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border(left: BorderSide(color: theme.colorScheme.primary, width: 4)),
+                        )
+                      : null,
+                  padding: isPlaying ? const EdgeInsets.only(left: 8.0, top: 4.0, bottom: 4.0) : EdgeInsets.zero,
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    onTap: () => collab.playAt(index),
+                    leading: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.network(
+                        item['thumbnail'] ?? '',
+                        width: 48,
+                        height: 48,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Container(
+                          width: 48,
+                          height: 48,
+                          color: Colors.grey.withOpacity(0.2),
+                          child: const Icon(Icons.music_note),
+                        ),
+                      ),
+                    ),
+                    title: Text(
+                      item['title'] ?? 'Unknown',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: isPlaying ? theme.colorScheme.primary : onSurface,
+                      ),
+                    ),
+                    subtitle: Text(
+                      item['artist'] ?? 'Unknown Artist',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 13, color: onSurface.withOpacity(0.5)),
+                    ),
+                    trailing: isPlaying
+                        ? Icon(Icons.equalizer, color: theme.colorScheme.primary, size: 20)
+                        : Icon(Icons.play_arrow, color: onSurface.withOpacity(0.3), size: 20),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        if (_userScrolled)
+          Positioned(
+            bottom: 16,
+            right: 8,
+            child: FloatingActionButton.small(
+              backgroundColor: theme.colorScheme.primary,
+              onPressed: () {
+                setState(() => _userScrolled = false);
+                _lastScrolledIndex = -1;
+                _maybeAutoScroll(playingIndex);
+              },
+              child: const Icon(Icons.my_location, color: Colors.white),
+            ),
+          ),
+      ],
+    );
+  }
+
+  void _confirmClearQueue(CollabService collab) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF151525),
+        title: const Text('Clear Queue?', style: TextStyle(color: Colors.white)),
+        content: const Text('This empties the Collab playlist but keeps the same session.', style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('CANCEL')),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              collab.clearQueue();
+            },
+            child: const Text('CLEAR', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmNewSession(CollabService collab) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF151525),
+        title: const Text('New Session?', style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'This generates a new session code and clears the playlist. Passengers will need to re-scan the new QR code.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('CANCEL')),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              collab.newSession();
+            },
+            child: const Text('NEW SESSION', style: TextStyle(color: Colors.orangeAccent)),
+          ),
         ],
       ),
     );

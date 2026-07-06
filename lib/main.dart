@@ -19,6 +19,7 @@ import 'ui/phone_tab.dart';
 import 'ui/welcome_overlay.dart';
 import 'package:share_handler/share_handler.dart';
 import 'services/youtube_service.dart';
+import 'services/collab_service.dart';
 import 'dart:math' as math;
 import 'ui/queue_tab.dart';
 
@@ -40,6 +41,14 @@ void main() {
         ChangeNotifierProvider(create: (_) => DashboardProvider()..initialize()),
         ChangeNotifierProvider(create: (_) => DynamicThemeProvider()),
         ChangeNotifierProvider(create: (_) => YouTubeService()),
+        // Collab engine — lives app-wide so it survives navigation and persists
+        // across restarts. Reads the two providers above (declared earlier).
+        ChangeNotifierProvider(
+          create: (context) => CollabService(
+            context.read<DashboardProvider>(),
+            context.read<YouTubeService>(),
+          ),
+        ),
       ],
       child: const MyApp(),
     ),

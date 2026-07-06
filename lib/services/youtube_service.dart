@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/youtube/v3.dart' as youtube;
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 
 class YouTubeService extends ChangeNotifier {
@@ -41,7 +42,10 @@ class YouTubeService extends ChangeNotifier {
       .replaceAll(RegExp(r'VEVO', caseSensitive: false), '')
       .trim();
 
+  static const String _queuePrefsKey = 'collab_queue';
+
   YouTubeService() {
+    _loadQueue();
     _googleSignIn.onCurrentUserChanged.listen((GoogleSignInAccount? account) async {
       _currentUser = account;
       if (_currentUser != null) {
@@ -53,6 +57,33 @@ class YouTubeService extends ChangeNotifier {
       notifyListeners();
     });
     _googleSignIn.signInSilently();
+  }
+
+  /// Restores the persisted queue so it survives app restarts (e.g. Android Auto
+  /// disconnecting and closing the app mid-drive).
+  Future<void> _loadQueue() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_queuePrefsKey);
+      if (raw != null && raw.isNotEmpty) {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) {
+          currentQueue = decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+          notifyListeners();
+        }
+      }
+    } catch (e) {
+      debugPrint('Failed to load persisted queue: $e');
+    }
+  }
+
+  Future<void> _saveQueue() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_queuePrefsKey, jsonEncode(currentQueue));
+    } catch (e) {
+      debugPrint('Failed to persist queue: $e');
+    }
   }
 
   Future<void> signIn() async {
@@ -105,6 +136,20 @@ class YouTubeService extends ChangeNotifier {
     if (_ytMusicSongCache.containsKey(cacheKey)) {
       return _ytMusicSongCache[cacheKey];
     }
+    final results = await searchYTMusicSongs(query, limit: 1);
+    if (results.isEmpty) return null;
+    debugPrint('YT Music resolved "$query" → "${results.first['title']}" by "${results.first['artist']}" (${results.first['videoId']})');
+    _ytMusicSongCache[cacheKey] = results.first;
+    return results.first;
+  }
+
+  /// Searches YT Music (Innertube "Songs" filter) and returns up to [limit]
+  /// parsed song candidates ({videoId, title, artist, thumbnail}), best-first.
+  /// Powers both single-song resolution and the PWA's search-results list —
+  /// YT Music's own ranking is far better than iTunes for title+artist queries.
+  Future<List<Map<String, String>>> searchYTMusicSongs(String query, {int limit = 8}) async {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return [];
 
     try {
       final url = Uri.parse('https://music.youtube.com/youtubei/v1/search?key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30');
@@ -123,41 +168,42 @@ class YouTubeService extends ChangeNotifier {
               'clientVersion': '1.20231204.01.00',
             },
           },
-          'query': query,
+          'query': trimmed,
           'params': 'EgWKAQIIAWoKEAkQBRAKEAMQBA==', // Filter: Songs only
         }),
       ).timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        // Navigate the nested Innertube response to the first song shelf item.
+        final results = <Map<String, String>>[];
+        // Navigate the nested Innertube response and collect song shelf items.
         final tabs = data['contents']?['tabbedSearchResultsRenderer']?['tabs'];
         if (tabs is List && tabs.isNotEmpty) {
           final sectionList = tabs[0]['tabRenderer']?['content']?['sectionListRenderer']?['contents'];
           if (sectionList is List) {
             for (final section in sectionList) {
               final shelfContents = section['musicShelfRenderer']?['contents'];
-              if (shelfContents is List && shelfContents.isNotEmpty) {
+              if (shelfContents is List) {
                 for (final item in shelfContents) {
                   final renderer = item['musicResponsiveListItemRenderer'];
                   if (renderer == null) continue;
                   final song = _parseSongRenderer(renderer);
                   if (song != null) {
-                    debugPrint('YT Music resolved "$query" → "${song['title']}" by "${song['artist']}" (${song['videoId']})');
-                    _ytMusicSongCache[cacheKey] = song;
-                    return song;
+                    results.add(song);
+                    if (results.length >= limit) return results;
                   }
                 }
               }
             }
           }
         }
+        return results;
       }
-      debugPrint('YT Music search returned no song results for "$query"');
+      debugPrint('YT Music search returned no song results for "$trimmed"');
     } catch (e) {
       debugPrint('YT Music search failed: $e');
     }
-    return null;
+    return [];
   }
 
   /// Extracts {videoId, title, artist, thumbnail} from a musicResponsiveListItemRenderer.
@@ -294,6 +340,7 @@ class YouTubeService extends ChangeNotifier {
       lastAddedTime = DateTime.now();
       lastAddedVideoId = videoId;
 
+      await _saveQueue();
       notifyListeners();
       return true;
     } catch (e) {
@@ -304,8 +351,26 @@ class YouTubeService extends ChangeNotifier {
     }
   }
 
+  /// Adds an already-resolved song (exact YT Music videoId + metadata, e.g. a
+  /// result the passenger picked from the PWA search list) directly to the queue,
+  /// skipping any re-search so the added song matches exactly what was shown.
+  Future<bool> addResolvedSong({
+    required String videoId,
+    required String title,
+    String artist = '',
+    String thumbnail = '',
+  }) {
+    return _addResolvedSong({
+      'videoId': videoId,
+      'title': title.isNotEmpty ? title : 'Unknown',
+      'artist': artist,
+      'thumbnail': thumbnail,
+    }, originalVideoId: videoId);
+  }
+
   Future<void> clearPlaylist() async {
     currentQueue.clear();
+    await _saveQueue();
     notifyListeners();
   }
 
@@ -316,6 +381,7 @@ class YouTubeService extends ChangeNotifier {
 
   Future<void> deleteSong(String playlistItemId) async {
     currentQueue.removeWhere((item) => item['id'] == playlistItemId);
+    await _saveQueue();
     notifyListeners();
   }
 
@@ -324,6 +390,7 @@ class YouTubeService extends ChangeNotifier {
     if (index != -1) {
       final item = currentQueue.removeAt(index);
       currentQueue.insert(newPosition.clamp(0, currentQueue.length), item);
+      await _saveQueue();
       notifyListeners();
     }
   }
