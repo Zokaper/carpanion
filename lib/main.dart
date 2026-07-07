@@ -129,9 +129,9 @@ class DashboardProvider with ChangeNotifier {
 
   // Favorites state variables
   List<Map<String, String>> _favorites = [
-    {'title': 'My Supermix', 'url': 'My Supermix'},
-    {'title': 'Chill Beats', 'url': 'Chill Beats'},
-    {'title': 'Driving Anthems', 'url': 'Driving Anthems'},
+    {'type': 'playlist', 'title': 'My Supermix', 'url': 'My Supermix', 'subtitle': 'YouTube Music'},
+    {'type': 'playlist', 'title': 'Chill Beats', 'url': 'Chill Beats', 'subtitle': 'YouTube Music'},
+    {'type': 'playlist', 'title': 'Driving Anthems', 'url': 'Driving Anthems', 'subtitle': 'YouTube Music'},
   ];
   Map<String, String>? _pendingSharedFavorite;
   
@@ -780,13 +780,22 @@ class DashboardProvider with ChangeNotifier {
            if (title != _currentTrack || artist != _currentArtist || _isPlaying != isCurrentlyPlaying) {
               if (title.isNotEmpty) _currentTrack = title;
               if (artist.isNotEmpty) _currentArtist = artist;
-              
+
+              // Pull the album name from the MediaSession metadata (not exposed by
+              // the plugin) so albums can be favorited.
+              try {
+                final meta = await platform.invokeMethod('getCurrentMediaMetadata');
+                if (meta is Map && meta['album'] != null) {
+                  _currentAlbum = meta['album'].toString();
+                }
+              } catch (_) {}
+
               if (!_isPlaying && isCurrentlyPlaying) {
                  // Music started playing
               }
               _isPlaying = isCurrentlyPlaying;
               notifyListeners();
-              
+
               if (title.isNotEmpty && title != 'Not Playing') {
                  await _fetchNativeAlbumArt();
               } else {
@@ -855,25 +864,41 @@ class DashboardProvider with ChangeNotifier {
 
   Future<void> loadFavorites() async {
     final prefs = await SharedPreferences.getInstance();
+    // New typed format: a single JSON list.
+    final json = prefs.getString('fav_json');
+    if (json != null && json.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(json);
+        if (decoded is List) {
+          _favorites = decoded
+              .map((e) => (e as Map).map((k, v) => MapEntry(k.toString(), v?.toString() ?? '')))
+              .toList();
+          notifyListeners();
+          return;
+        }
+      } catch (e) {
+        debugPrint('Failed to parse fav_json: $e');
+      }
+    }
+    // Migrate the old parallel-list format (all treated as legacy playlists).
     final titles = prefs.getStringList('fav_titles');
     final urls = prefs.getStringList('fav_urls');
     final subtitles = prefs.getStringList('fav_subtitles');
-    
     if (titles != null && urls != null && titles.length == urls.length && titles.isNotEmpty) {
       _favorites = List.generate(titles.length, (i) => {
+        'type': 'playlist',
         'title': titles[i],
         'url': urls[i],
         'subtitle': (subtitles != null && i < subtitles.length) ? subtitles[i] : 'YouTube Music Playlist',
       });
+      await saveFavorites(); // re-persist in the new format
       notifyListeners();
     }
   }
 
   Future<void> saveFavorites() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('fav_titles', _favorites.map((e) => e['title'] ?? '').toList());
-    await prefs.setStringList('fav_urls', _favorites.map((e) => e['url'] ?? '').toList());
-    await prefs.setStringList('fav_subtitles', _favorites.map((e) => e['subtitle'] ?? 'YouTube Music Playlist').toList());
+    await prefs.setString('fav_json', jsonEncode(_favorites));
     notifyListeners();
   }
 
@@ -920,6 +945,47 @@ class DashboardProvider with ChangeNotifier {
     _favorites.removeWhere((fav) => fav['title'] == title);
     saveFavorites();
     notifyListeners();
+  }
+
+  // --- Typed favorites (song / album / artist) ---
+  bool isSongFavorited(String title) => _favorites.any((f) => f['type'] == 'song' && f['title'] == title);
+  bool isAlbumFavorited(String album) => _favorites.any((f) => f['type'] == 'album' && f['title'] == album);
+  bool isArtistFavorited(String artist) => _favorites.any((f) => f['type'] == 'artist' && f['title'] == artist);
+
+  void removeFavoriteTyped(String title, String type) {
+    _favorites.removeWhere((f) => f['type'] == type && f['title'] == title);
+    saveFavorites();
+    notifyListeners();
+  }
+
+  /// Adds a song favorite (videoId + thumbnail already resolved by the caller so
+  /// it plays instantly later). Falls back to the '$title $artist' query if the
+  /// videoId is empty.
+  void addSongFavorite({required String title, required String artist, required String videoId, required String thumbnail}) {
+    addNewFavorite({
+      'type': 'song',
+      'title': title,
+      'subtitle': artist,
+      'videoId': videoId,
+      'thumbnail': thumbnail,
+      'url': '$title $artist',
+    });
+  }
+
+  void toggleAlbumFavorite(String album, String artist) {
+    if (isAlbumFavorited(album)) {
+      removeFavoriteTyped(album, 'album');
+    } else {
+      addNewFavorite({'type': 'album', 'title': album, 'subtitle': artist, 'url': '$album $artist'});
+    }
+  }
+
+  void toggleArtistFavorite(String artist) {
+    if (isArtistFavorited(artist)) {
+      removeFavoriteTyped(artist, 'artist');
+    } else {
+      addNewFavorite({'type': 'artist', 'title': artist, 'subtitle': 'Artist', 'url': artist});
+    }
   }
 
   void handleSharedText(String sharedText) async {
@@ -1625,29 +1691,37 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
         right: 0,
         child: Builder(
           builder: (context) {
-            final isFavorited = provider.favorites.any((fav) => fav['title'] == provider.currentTrack && (fav['subtitle'] == provider.currentArtist || fav['subtitle'] == 'Search Query'));
-            return IconButton(
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(),
-              icon: Icon(
-                isFavorited ? Icons.favorite : Icons.favorite_border,
-                color: theme.colorScheme.primary,
-                size: 20
-              ),
-              onPressed: () {
-                 if (provider.currentTrack != 'Not Playing') {
-                    if (isFavorited) {
-                      provider.removeFavoriteByTitle(provider.currentTrack);
-                    } else {
-                      final query = "${provider.currentTrack} ${provider.currentArtist}";
-                      provider.addNewFavorite({
-                        'title': provider.currentTrack,
-                        'subtitle': provider.currentArtist,
-                        'url': query
-                      });
-                    }
-                 }
-              },
+            final playing = provider.currentTrack.isNotEmpty && provider.currentTrack != 'Not Playing';
+            final songFav = provider.isSongFavorited(provider.currentTrack);
+            final albumFav = provider.currentAlbum.isNotEmpty && provider.isAlbumFavorited(provider.currentAlbum);
+            final artistFav = provider.isArtistFavorited(provider.currentArtist);
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _favIconButton(
+                  icon: songFav ? Icons.favorite : Icons.favorite_border,
+                  active: songFav,
+                  theme: theme,
+                  tooltip: 'Favorite song',
+                  onPressed: playing ? () => _toggleSongFavorite(context, provider) : null,
+                ),
+                _favIconButton(
+                  icon: Icons.album,
+                  active: albumFav,
+                  theme: theme,
+                  tooltip: 'Favorite album',
+                  onPressed: (playing && provider.currentAlbum.isNotEmpty)
+                      ? () => provider.toggleAlbumFavorite(provider.currentAlbum, provider.currentArtist)
+                      : null,
+                ),
+                _favIconButton(
+                  icon: Icons.interpreter_mode,
+                  active: artistFav,
+                  theme: theme,
+                  tooltip: 'Favorite artist',
+                  onPressed: playing ? () => provider.toggleArtistFavorite(provider.currentArtist) : null,
+                ),
+              ],
             );
           }
         ),
@@ -1655,6 +1729,48 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
         ],
       ),
     );
+  }
+
+  Widget _favIconButton({
+    required IconData icon,
+    required bool active,
+    required ThemeData theme,
+    required String tooltip,
+    required VoidCallback? onPressed,
+  }) {
+    final color = onPressed == null
+        ? theme.colorScheme.onSurface.withOpacity(0.25)
+        : (active ? theme.colorScheme.primary : theme.colorScheme.onSurface.withOpacity(0.55));
+    return IconButton(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      constraints: const BoxConstraints(),
+      visualDensity: VisualDensity.compact,
+      icon: Icon(icon, color: color, size: 20),
+      tooltip: tooltip,
+      onPressed: onPressed,
+    );
+  }
+
+  /// Toggles the current track as a song favorite. When adding, resolves the
+  /// exact YT Music song id up front so playback later is instant.
+  Future<void> _toggleSongFavorite(BuildContext context, DashboardProvider provider) async {
+    final title = provider.currentTrack;
+    final artist = provider.currentArtist;
+    if (title.isEmpty || title == 'Not Playing') return;
+    if (provider.isSongFavorited(title)) {
+      provider.removeFavoriteTyped(title, 'song');
+      return;
+    }
+    String videoId = '';
+    String thumbnail = '';
+    try {
+      final results = await context.read<YouTubeService>().searchYTMusicSongs('$title $artist', limit: 1);
+      if (results.isNotEmpty) {
+        videoId = results.first['videoId'] ?? '';
+        thumbnail = results.first['thumbnail'] ?? '';
+      }
+    } catch (_) {}
+    provider.addSongFavorite(title: title, artist: artist, videoId: videoId, thumbnail: thumbnail);
   }
 
   Widget _buildControlButton({
@@ -1855,6 +1971,63 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
     );
   }
 
+  IconData _iconForFavoriteType(String? type, IconData fallback) {
+    switch (type) {
+      case 'song':
+        return Icons.music_note;
+      case 'album':
+        return Icons.album;
+      case 'artist':
+        return Icons.interpreter_mode;
+      case 'playlist':
+        return Icons.queue_music;
+      default:
+        return fallback;
+    }
+  }
+
+  /// Plays a favorite by type: song → direct (no flash); album/artist → fetch
+  /// tracks natively into the queue; playlist/legacy or a failed native fetch →
+  /// fall back to launching YT Music.
+  Future<void> _playFavorite(BuildContext context, Map<String, String> fav) async {
+    final type = fav['type'] ?? 'playlist';
+    final collab = context.read<CollabService>();
+    final yt = context.read<YouTubeService>();
+    final messenger = ScaffoldMessenger.of(context);
+
+    if (type == 'song') {
+      final vid = fav['videoId'] ?? '';
+      if (vid.isNotEmpty) {
+        collab.playFavoriteSong(
+          videoId: vid,
+          title: fav['title'] ?? '',
+          artist: fav['subtitle'] ?? '',
+          thumbnail: fav['thumbnail'] ?? '',
+        );
+        return;
+      }
+    } else if (type == 'album') {
+      messenger.showSnackBar(SnackBar(content: Text('Loading album "${fav['title']}"…'), duration: const Duration(seconds: 2)));
+      final tracks = await yt.getAlbumTracks(fav['title'] ?? '', fav['subtitle'] ?? '');
+      if (tracks.isNotEmpty) {
+        await collab.loadQueueAndPlay(tracks);
+        return;
+      }
+    } else if (type == 'artist') {
+      messenger.showSnackBar(SnackBar(content: Text('Starting ${fav['title']} radio…'), duration: const Duration(seconds: 2)));
+      final tracks = await yt.getArtistRadioTracks(fav['title'] ?? fav['subtitle'] ?? '');
+      if (tracks.isNotEmpty) {
+        await collab.loadQueueAndPlay(tracks);
+        return;
+      }
+    }
+
+    // Fallback: legacy YT Music launch (playlist type, missing id, or fetch failed).
+    if (context.mounted) {
+      _launchPlaylist(context, fav['url'] ?? fav['title'] ?? '');
+    }
+  }
+
   Future<void> _launchPlaylist(BuildContext context, String queryOrUrl) async {
     final isUrl = queryOrUrl.startsWith('http');
     final provider = Provider.of<DashboardProvider>(context, listen: false);
@@ -2022,8 +2195,8 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
                   subtitle: provider.favorites[index]['subtitle'] ?? 'YouTube Music Playlist',
                   startColor: startColors[index % startColors.length],
                   endColor: endColors[index % endColors.length],
-                  icon: icons[index % icons.length],
-                  onTap: () => _launchPlaylist(context, provider.favorites[index]['url'] ?? ''),
+                  icon: _iconForFavoriteType(provider.favorites[index]['type'], icons[index % icons.length]),
+                  onTap: () => _playFavorite(context, provider.favorites[index]),
                   onLongPress: () => provider.removeFavoriteAt(index),
                 ),
               );

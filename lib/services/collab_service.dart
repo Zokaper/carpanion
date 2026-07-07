@@ -29,8 +29,11 @@ class CollabService extends ChangeNotifier {
   io.Socket? _socket;
 
   String _sessionId = '';
-  bool _enabled = false;
+  bool _enabled = false; // "Collab enabled" = passenger sharing is open (NOT playback).
   int _currentPlayingIndex = -1;
+  // True while we are actively driving the queue (so Auto-DJ advances at song end).
+  // Decoupled from _enabled so favorites playback works with Collab off.
+  bool _playbackActive = false;
   bool _allowEditing = false;
   bool _allowMediaControl = false;
 
@@ -75,9 +78,12 @@ class CollabService extends ChangeNotifier {
 
     // Silent restore: we set _currentPlayingIndex from disk but do NOT replay it.
     // YT Music is likely still playing the song; if it matches a queue item,
-    // reconcile the highlight to it now (no playback triggered).
+    // reconcile the highlight to it now (no playback triggered) and resume Auto-DJ.
     final restoredIdx = _matchQueueIndex(_lastTrack);
-    if (restoredIdx != -1) _currentPlayingIndex = restoredIdx;
+    if (restoredIdx != -1) {
+      _currentPlayingIndex = restoredIdx;
+      _playbackActive = true;
+    }
 
     _dashboard.addListener(_onDashboardUpdate);
     _yt.addListener(_onQueueUpdate);
@@ -118,6 +124,7 @@ class CollabService extends ChangeNotifier {
     });
 
     _socket!.on('add_song', (data) async {
+      if (!_enabled) return; // passenger writes only when sharing is on
       debugPrint("Collab: add_song event: $data");
       if (data is Map && data['videoId'] != null) {
         final ok = await _yt.addVideoToPlaylist(
@@ -129,6 +136,7 @@ class CollabService extends ChangeNotifier {
     });
 
     _socket!.on('passenger_add_resolved', (data) async {
+      if (!_enabled) return;
       // A song the passenger picked from the PWA's YT Music search list — already
       // resolved to an exact songId, so add it directly (no re-search).
       debugPrint("Collab: passenger_add_resolved event: $data");
@@ -144,6 +152,7 @@ class CollabService extends ChangeNotifier {
     });
 
     _socket!.on('passenger_search_and_add_song', (query) async {
+      if (!_enabled) return;
       debugPrint("Collab: passenger_search_and_add_song event: $query");
       final ok = await _yt.searchAndAddSong(query.toString());
       if (ok) _maybeAutoStart();
@@ -189,7 +198,7 @@ class CollabService extends ChangeNotifier {
     });
 
     _socket!.on('passenger_media_action', (action) async {
-      if (!_allowMediaControl) return;
+      if (!_enabled || !_allowMediaControl) return;
       try {
         if (action == 'playPause') {
           await FlutterMediaController.togglePlayPause();
@@ -204,17 +213,17 @@ class CollabService extends ChangeNotifier {
     });
 
     _socket!.on('passenger_play_song', (id) async {
-      if (!_allowMediaControl) return;
+      if (!_enabled || !_allowMediaControl) return;
       final index = _yt.currentQueue.indexWhere((item) => item['id'] == id);
       if (index != -1) playAt(index);
     });
 
     _socket!.on('passenger_delete_song', (playlistItemId) async {
-      if (_allowEditing) await _yt.deleteSong(playlistItemId);
+      if (_enabled && _allowEditing) await _yt.deleteSong(playlistItemId);
     });
 
     _socket!.on('passenger_reorder_song', (data) async {
-      if (_allowEditing && data is Map) {
+      if (_enabled && _allowEditing && data is Map) {
         await _yt.reorderSong(data['playlistItemId'], data['newPosition']);
       }
     });
@@ -243,21 +252,26 @@ class CollabService extends ChangeNotifier {
     _lastTrack = _dashboard.currentTrack;
     _socket?.emit('update_playing_status', _lastTrack);
 
-    if (_enabled) {
-      final index = _matchQueueIndex(_lastTrack);
-      if (index != -1) {
+    // Auto-DJ runs whenever we are actively driving the queue (favorites OR collab),
+    // independent of the sharing flag.
+    final index = _matchQueueIndex(_lastTrack);
+    if (index != -1) {
+      // Keep the highlight synced with whatever queue track is playing.
+      if (_currentPlayingIndex != index) {
         _currentPlayingIndex = index;
         _persist();
+      }
+    } else if (_playbackActive && _currentPlayingIndex != -1) {
+      // The queue track we were playing ended (YT Music moved to autoplay).
+      if (_yt.currentQueue.length > _currentPlayingIndex + 1) {
+        _currentPlayingIndex++;
+        debugPrint("Collab Auto-DJ: advancing to index $_currentPlayingIndex");
+        playAt(_currentPlayingIndex);
       } else {
-        // YT Music moved to a track not in our queue (song ended / autoplay).
-        if (_currentPlayingIndex != -1 && _yt.currentQueue.length > _currentPlayingIndex + 1) {
-          _currentPlayingIndex++;
-          debugPrint("Collab Auto-DJ: advancing to index $_currentPlayingIndex");
-          playAt(_currentPlayingIndex);
-        } else if (_currentPlayingIndex != -1) {
-          _currentPlayingIndex = -1; // Reached the end of the queue.
-          _persist();
-        }
+        // Reached the end of the queue.
+        _currentPlayingIndex = -1;
+        _playbackActive = false;
+        _persist();
       }
     }
     notifyListeners();
@@ -272,30 +286,49 @@ class CollabService extends ChangeNotifier {
     });
   }
 
-  /// Auto-start playback when a song is added while collab is enabled and nothing
-  /// is currently playing.
+  /// Auto-start playback when a song is added to an idle queue (nothing playing).
   void _maybeAutoStart() {
-    if (_enabled && _currentPlayingIndex == -1 && _yt.currentQueue.isNotEmpty) {
+    if (!_playbackActive && _currentPlayingIndex == -1 && _yt.currentQueue.isNotEmpty) {
       playAt(0);
     }
   }
 
-  // --- Enable / Disable ---
+  // --- Favorites playback entry points (replace the queue and play "now") ---
+
+  /// Plays a single favorited song directly (no YT Music flash).
+  Future<void> playFavoriteSong({
+    required String videoId,
+    required String title,
+    String artist = '',
+    String thumbnail = '',
+  }) async {
+    await _yt.replaceQueue([
+      {'videoId': videoId, 'title': title, 'artist': artist, 'thumbnail': thumbnail},
+    ]);
+    playAt(0);
+  }
+
+  /// Replaces the queue with a resolved track list (album tracks / artist radio)
+  /// and starts playing from the top.
+  Future<void> loadQueueAndPlay(List<Map<String, String>> songs) async {
+    if (songs.isEmpty) return;
+    await _yt.replaceQueue(songs);
+    playAt(0);
+  }
+
+  // --- Enable / Disable — sharing layer only, never touches playback ---
   void enable() {
     _enabled = true;
     _persist();
     notifyListeners();
-    // Explicit action: play the saved song from its start.
-    if (_yt.currentQueue.isNotEmpty) {
-      playAt(_currentPlayingIndex < 0 || _currentPlayingIndex >= _yt.currentQueue.length
-          ? 0
-          : _currentPlayingIndex);
-    }
+    // Re-broadcast current state to any connected passengers.
+    _socket?.emit('update_queue', jsonEncode(_yt.currentQueue));
+    _socket?.emit('update_permissions', _allowEditing);
+    _socket?.emit('update_media_permissions', _allowMediaControl);
   }
 
   void disable() {
-    // "Keep playing": stop managing but do NOT pause. The index is retained so
-    // re-enabling resumes from the same song.
+    // Close the door to passengers. Playback is untouched and keeps going.
     _enabled = false;
     _persist();
     notifyListeners();
@@ -323,6 +356,7 @@ class CollabService extends ChangeNotifier {
   void playAt(int index) {
     if (index < 0 || index >= _yt.currentQueue.length) return;
     _currentPlayingIndex = index;
+    _playbackActive = true;
     _persist();
     notifyListeners();
 
@@ -388,6 +422,7 @@ class CollabService extends ChangeNotifier {
   /// so a later add auto-starts correctly.
   Future<void> clearQueue() async {
     _currentPlayingIndex = -1;
+    _playbackActive = false;
     await _yt.clearPlaylist();
     await _persist();
     notifyListeners();
@@ -397,6 +432,7 @@ class CollabService extends ChangeNotifier {
   Future<void> newSession() async {
     _sessionId = _generateSessionId();
     _currentPlayingIndex = -1;
+    _playbackActive = false;
     _enabled = false;
     await _yt.clearPlaylist();
     await _persist();

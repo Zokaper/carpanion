@@ -252,6 +252,190 @@ class YouTubeService extends ChangeNotifier {
     };
   }
 
+  // --- YT Music Innertube: albums & artist radio ------------------------------
+  //
+  // These power native favorites playback (album track lists / artist shuffle).
+  // They are best-effort against YT Music's private Innertube API; every method
+  // returns [] on any failure so callers fall back to the legacy YT Music launch.
+
+  static const String _innertubeKey = 'AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30';
+
+  Future<dynamic> _innertubePost(String endpoint, Map<String, dynamic> extraBody) async {
+    final url = Uri.parse('https://music.youtube.com/youtubei/v1/$endpoint?key=$_innertubeKey&prettyPrint=false');
+    final response = await http.post(
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        'Origin': 'https://music.youtube.com',
+        'Referer': 'https://music.youtube.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      },
+      body: jsonEncode({
+        'context': {
+          'client': {'clientName': 'WEB_REMIX', 'clientVersion': '1.20231204.01.00'},
+        },
+        ...extraBody,
+      }),
+    ).timeout(const Duration(seconds: 8));
+    if (response.statusCode == 200) return jsonDecode(response.body);
+    debugPrint('Innertube $endpoint returned ${response.statusCode}');
+    return null;
+  }
+
+  /// Fetches the ordered track list for an album by name+artist.
+  Future<List<Map<String, String>>> getAlbumTracks(String album, String artist) async {
+    try {
+      final data = await _innertubePost('search', {'query': '$album $artist'.trim()});
+      // Album browseIds start with "MPRE".
+      final albumId = _findBrowseId(data, 'MPRE');
+      if (albumId == null) {
+        debugPrint('getAlbumTracks: no album browseId for "$album $artist"');
+        return [];
+      }
+      final browse = await _innertubePost('browse', {'browseId': albumId});
+      final albumThumb = _findFirstThumbnail(browse);
+      final renderers = <Map>[];
+      _collectByKey(browse, 'musicResponsiveListItemRenderer', renderers);
+      final tracks = <Map<String, String>>[];
+      for (final r in renderers) {
+        final parsed = _parseSongRenderer(r);
+        if (parsed == null) continue;
+        // Album rows often omit per-row artist/thumbnail — fill from album context.
+        if ((parsed['artist'] ?? '').isEmpty) parsed['artist'] = artist;
+        if ((parsed['thumbnail'] ?? '').isEmpty && albumThumb != null) parsed['thumbnail'] = albumThumb;
+        tracks.add(parsed);
+      }
+      debugPrint('getAlbumTracks: "$album" → ${tracks.length} tracks');
+      return tracks;
+    } catch (e) {
+      debugPrint('getAlbumTracks failed: $e');
+      return [];
+    }
+  }
+
+  /// Fetches a shuffled artist radio (YT Music's own popularity-weighted mix).
+  Future<List<Map<String, String>>> getArtistRadioTracks(String artist) async {
+    try {
+      final data = await _innertubePost('search', {'query': artist});
+      // Artist browseIds are channel ids ("UC...").
+      final artistId = _findBrowseId(data, 'UC');
+      if (artistId == null) {
+        debugPrint('getArtistRadioTracks: no artist browseId for "$artist"');
+        return [];
+      }
+      final browse = await _innertubePost('browse', {'browseId': artistId});
+      // Radio/shuffle playlist ids start with "RD".
+      final radioId = _findRadioPlaylistId(browse);
+      if (radioId == null) {
+        debugPrint('getArtistRadioTracks: no radio playlist for "$artist"');
+        return [];
+      }
+      final next = await _innertubePost('next', {'playlistId': radioId, 'isAudioOnly': true});
+      final renderers = <Map>[];
+      _collectByKey(next, 'playlistPanelVideoRenderer', renderers);
+      final tracks = <Map<String, String>>[];
+      for (final r in renderers) {
+        final videoId = r['videoId']?.toString();
+        if (videoId == null || videoId.isEmpty) continue;
+        final title = _runsText(r['title']);
+        final byline = _runsText(r['longBylineText'] ?? r['shortBylineText']);
+        String thumb = '';
+        final thumbs = r['thumbnail']?['thumbnails'];
+        if (thumbs is List && thumbs.isNotEmpty) {
+          thumb = (thumbs.last['url']?.toString() ?? '').replaceAll(RegExp(r'=w\d+-h\d+'), '=w400-h400');
+        }
+        tracks.add({
+          'videoId': videoId,
+          'title': title.isNotEmpty ? title : 'Unknown',
+          'artist': byline.split('•').first.trim(),
+          'thumbnail': thumb,
+        });
+      }
+      debugPrint('getArtistRadioTracks: "$artist" → ${tracks.length} tracks');
+      return tracks;
+    } catch (e) {
+      debugPrint('getArtistRadioTracks failed: $e');
+      return [];
+    }
+  }
+
+  // Recursive helpers for walking the deeply-nested Innertube JSON.
+  String? _findBrowseId(dynamic node, String prefix) {
+    if (node is Map) {
+      final b = node['browseId'];
+      if (b is String && b.startsWith(prefix)) return b;
+      for (final v in node.values) {
+        final r = _findBrowseId(v, prefix);
+        if (r != null) return r;
+      }
+    } else if (node is List) {
+      for (final v in node) {
+        final r = _findBrowseId(v, prefix);
+        if (r != null) return r;
+      }
+    }
+    return null;
+  }
+
+  String? _findRadioPlaylistId(dynamic node) {
+    if (node is Map) {
+      final p = node['playlistId'];
+      if (p is String && p.startsWith('RD')) return p;
+      for (final v in node.values) {
+        final r = _findRadioPlaylistId(v);
+        if (r != null) return r;
+      }
+    } else if (node is List) {
+      for (final v in node) {
+        final r = _findRadioPlaylistId(v);
+        if (r != null) return r;
+      }
+    }
+    return null;
+  }
+
+  String? _findFirstThumbnail(dynamic node) {
+    if (node is Map) {
+      final t = node['thumbnails'];
+      if (t is List && t.isNotEmpty && t.last is Map && t.last['url'] != null) {
+        return t.last['url'].toString().replaceAll(RegExp(r'=w\d+-h\d+'), '=w400-h400');
+      }
+      for (final v in node.values) {
+        final r = _findFirstThumbnail(v);
+        if (r != null) return r;
+      }
+    } else if (node is List) {
+      for (final v in node) {
+        final r = _findFirstThumbnail(v);
+        if (r != null) return r;
+      }
+    }
+    return null;
+  }
+
+  void _collectByKey(dynamic node, String key, List<Map> out) {
+    if (node is Map) {
+      final v = node[key];
+      if (v is Map) out.add(v);
+      for (final val in node.values) {
+        _collectByKey(val, key, out);
+      }
+    } else if (node is List) {
+      for (final val in node) {
+        _collectByKey(val, key, out);
+      }
+    }
+  }
+
+  String _runsText(dynamic textObj) {
+    if (textObj is Map) {
+      final runs = textObj['runs'];
+      if (runs is List) return runs.map((r) => (r is Map ? r['text'] ?? '' : '')).join('');
+      return textObj['simpleText']?.toString() ?? '';
+    }
+    return '';
+  }
+
   /// Fetches the real title of a YouTube video via the Data API. Used when an
   /// add request arrives with only a videoId (e.g. shared links), so we have a
   /// meaningful query to hand to YT Music search.
@@ -366,6 +550,26 @@ class YouTubeService extends ChangeNotifier {
       'artist': artist,
       'thumbnail': thumbnail,
     }, originalVideoId: videoId);
+  }
+
+  /// Replaces the entire queue with a resolved list of songs (album tracks,
+  /// artist radio, or a single favorite). Assigns fresh local ids and persists.
+  Future<void> replaceQueue(List<Map<String, String>> songs) async {
+    final base = DateTime.now().millisecondsSinceEpoch;
+    currentQueue = List.generate(songs.length, (i) {
+      final s = songs[i];
+      final vid = s['videoId'] ?? '';
+      return <String, dynamic>{
+        'id': '${base + i}',
+        'videoId': vid,
+        'originalVideoId': vid,
+        'title': s['title'] ?? 'Unknown',
+        'artist': s['artist'] ?? '',
+        'thumbnail': s['thumbnail'] ?? '',
+      };
+    });
+    await _saveQueue();
+    notifyListeners();
   }
 
   Future<void> clearPlaylist() async {

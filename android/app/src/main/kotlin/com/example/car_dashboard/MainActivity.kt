@@ -237,6 +237,32 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                 }
+                "getCurrentMediaMetadata" -> {
+                    try {
+                        val mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+                        val componentName = ComponentName(this@MainActivity, DashcamListenerService::class.java)
+                        val controllers = mediaSessionManager.getActiveSessions(componentName)
+                        val controller = controllers.firstOrNull { it.packageName == "com.google.android.apps.youtube.music" }
+                            ?: controllers.firstOrNull()
+                        if (controller != null) {
+                            val md = controller.metadata
+                            val title = md?.getString(MediaMetadata.METADATA_KEY_TITLE)
+                                ?: md?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE) ?: ""
+                            val artist = md?.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                                ?: md?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) ?: ""
+                            val album = md?.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: ""
+                            result.success(mapOf(
+                                "title" to title,
+                                "artist" to artist,
+                                "album" to album
+                            ))
+                        } else {
+                            result.success(null)
+                        }
+                    } catch (e: Exception) {
+                        result.success(null)
+                    }
+                }
                 "getMediaArt" -> {
                     try {
                         val mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
