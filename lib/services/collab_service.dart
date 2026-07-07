@@ -282,11 +282,8 @@ class CollabService extends ChangeNotifier {
       if (_yt.currentQueue.length > _currentPlayingIndex + 1) {
         _currentPlayingIndex++;
         debugPrint("Collab Auto-DJ: advancing to index $_currentPlayingIndex");
-        // Guard against advancing again while YT Music is still loading this
-        // target (autoplay can flash several non-matching tracks first, which
-        // would otherwise skip queue entries). Self-heals if the target never loads.
-        _advancing = true;
-        Future.delayed(const Duration(seconds: 10), () => _advancing = false);
+        // playAt() re-arms the _advancing guard while YT Music loads the target,
+        // so autoplay flashing several non-matching tracks can't skip entries.
         playAt(_currentPlayingIndex);
       } else {
         // Reached the end of the queue.
@@ -378,6 +375,13 @@ class CollabService extends ChangeNotifier {
     if (index < 0 || index >= _yt.currentQueue.length) return;
     _currentPlayingIndex = index;
     _playbackActive = true;
+    // Guard Auto-DJ from advancing off this track until YT Music actually loads
+    // it. Right after a deliberate play the native metadata still reports the
+    // PREVIOUS song (which isn't in the new queue), and without this the Auto-DJ
+    // would instantly skip to index+1. Cleared when `_matchQueueIndex` sees the
+    // target load; self-heals after 10s if it never does.
+    _advancing = true;
+    Future.delayed(const Duration(seconds: 10), () => _advancing = false);
     _persist();
     notifyListeners();
 

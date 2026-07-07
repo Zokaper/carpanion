@@ -284,7 +284,12 @@ class _QueueTabState extends State<QueueTab> {
                         )
                       : null,
                   padding: isPlaying ? const EdgeInsets.only(left: 8.0, top: 4.0, bottom: 4.0) : EdgeInsets.zero,
-                  child: ListTile(
+                  // Transparent Material so the tile's tap-ink has a surface to
+                  // paint on above the colored Container (silences the "ListTile
+                  // background color or ink splashes may be invisible" warning).
+                  child: Material(
+                    type: MaterialType.transparency,
+                    child: ListTile(
                     contentPadding: EdgeInsets.zero,
                     dense: true,
                     onTap: () => collab.playAt(index),
@@ -322,6 +327,7 @@ class _QueueTabState extends State<QueueTab> {
                     trailing: isPlaying
                         ? Icon(Icons.equalizer, color: theme.colorScheme.primary, size: 20)
                         : Icon(Icons.play_arrow, color: onSurface.withOpacity(0.3), size: 20),
+                    ),
                   ),
                 ),
               );
