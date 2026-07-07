@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/youtube/v3.dart' as youtube;
@@ -14,6 +15,7 @@ class YouTubeService extends ChangeNotifier {
 
   GoogleSignInAccount? _currentUser;
   youtube.YouTubeApi? _youtubeApi;
+  final math.Random _rng = math.Random();
 
   GoogleSignInAccount? get currentUser => _currentUser;
   bool get isSignedIn => _currentUser != null;
@@ -252,11 +254,21 @@ class YouTubeService extends ChangeNotifier {
       thumbnail = thumbnail.replaceAll(RegExp(r'=w\d+-h\d+'), '=w400-h400');
     }
 
+    // musicVideoType: ATV = audio track; OMV/UGC = a music/user video. Album
+    // pages hand out OMV ids for tracks that have videos, which would play the
+    // video version — callers use this to prefer the audio (ATV) id.
+    final videoType = renderer['overlay']?['musicItemThumbnailOverlayRenderer']
+        ?['content']?['musicPlayButtonRenderer']
+        ?['playNavigationEndpoint']?['watchEndpoint']
+        ?['watchEndpointMusicSupportedConfigs']?['watchEndpointMusicConfig']
+        ?['musicVideoType']?.toString() ?? '';
+
     return {
       'videoId': videoId,
       'title': title.isNotEmpty ? title : 'Unknown',
       'artist': artist,
       'thumbnail': thumbnail,
+      'videoType': videoType,
     };
   }
 
@@ -294,16 +306,22 @@ class YouTubeService extends ChangeNotifier {
   Future<List<Map<String, String>>> getAlbumTracks(String album, String artist) async {
     try {
       final data = await _innertubePost('search', {'query': '$album $artist'.trim()});
-      // Album browseIds start with "MPRE".
-      final albumId = _findBrowseId(data, 'MPRE');
+      // Pick the album whose title best matches, preferring the STANDARD edition
+      // over Deluxe/Expanded/Video (which carries the wrong cover + video ids).
+      final albumId = _pickAlbumId(data, album) ?? _findBrowseId(data, 'MPRE');
       if (albumId == null) {
         debugPrint('getAlbumTracks: no album browseId for "$album $artist"');
         return [];
       }
       final browse = await _innertubePost('browse', {'browseId': albumId});
-      final albumThumb = _findFirstThumbnail(browse);
+      // Cover: the album HEADER thumbnail specifically, not a greedy first match
+      // (which could grab a carousel/related-album image higher in the tree).
+      final albumThumb = _findHeaderThumbnail(browse) ?? _findFirstThumbnail(browse);
+      // Scope track collection to the album's track shelf so stray rows from
+      // "related albums" shelves don't leak in.
+      final shelf = _findFirstOfKey(browse, const ['musicPlaylistShelfRenderer', 'musicShelfRenderer']);
       final renderers = <Map>[];
-      _collectByKey(browse, 'musicResponsiveListItemRenderer', renderers);
+      _collectByKey(shelf ?? browse, 'musicResponsiveListItemRenderer', renderers);
       final tracks = <Map<String, String>>[];
       for (final r in renderers) {
         final parsed = _parseSongRenderer(r);
@@ -313,12 +331,109 @@ class YouTubeService extends ChangeNotifier {
         if ((parsed['thumbnail'] ?? '').isEmpty && albumThumb != null) parsed['thumbnail'] = albumThumb;
         tracks.add(parsed);
       }
-      debugPrint('getAlbumTracks: "$album" → ${tracks.length} tracks');
+      // NOTE: album rows expose the VIDEO (OMV) id for tracks that have a music
+      // video, so those play the video version. The reliable fix (re-resolving
+      // each to its audio ATV id via a per-track search) is deferred — doing it
+      // inline blocks playback, and a background swap needs the queue to carry
+      // `videoType`. See `videoType` in _parseSongRenderer.
+      debugPrint('getAlbumTracks: "$album" → ${tracks.length} tracks (album $albumId)');
       return tracks;
     } catch (e) {
       debugPrint('getAlbumTracks failed: $e');
       return [];
     }
+  }
+
+  /// Chooses the best-matching album browseId from a search response. Collects
+  /// (title, MPRE id) candidates and scores by title match, penalizing
+  /// Deluxe/Expanded/Video editions unless the requested album asked for one.
+  String? _pickAlbumId(dynamic data, String wantedAlbum) {
+    final renderers = <Map>[];
+    _collectByKey(data, 'musicResponsiveListItemRenderer', renderers);
+    _collectByKey(data, 'musicTwoRowItemRenderer', renderers);
+    final want = wantedAlbum.toLowerCase().trim();
+    String? best;
+    double bestScore = -1;
+    for (final r in renderers) {
+      final id = _findBrowseId(r, 'MPRE');
+      if (id == null) continue;
+      final title = _rendererTitle(r).toLowerCase().trim();
+      if (title.isEmpty) continue;
+      final score = _albumScore(title, want);
+      if (score > bestScore) {
+        bestScore = score;
+        best = id;
+      }
+    }
+    return best;
+  }
+
+  double _albumScore(String candidate, String want) {
+    double score = 0;
+    if (candidate == want) {
+      score += 100;
+    } else if (candidate.contains(want) || want.contains(candidate)) {
+      score += 50;
+    }
+    const editionWords = ['deluxe', 'expanded', 'video', 'edition', 'anniversary'];
+    final candidateHasEdition = editionWords.any((w) => candidate.contains(w));
+    final wantHasEdition = editionWords.any((w) => want.contains(w));
+    if (candidateHasEdition && !wantHasEdition) score -= 40; // prefer standard
+    // Prefer the closest length (fewer extra words) as a tiebreaker.
+    score -= (candidate.length - want.length).abs() * 0.1;
+    return score;
+  }
+
+  /// Title of a search-result renderer (list row or two-row card).
+  String _rendererTitle(Map r) {
+    final flex = r['flexColumns'];
+    if (flex is List && flex.isNotEmpty) {
+      final runs = flex[0]?['musicResponsiveListItemFlexColumnRenderer']?['text']?['runs'];
+      if (runs is List && runs.isNotEmpty) return runs[0]?['text']?.toString() ?? '';
+    }
+    return _runsText(r['title']);
+  }
+
+  /// Returns the first value found under any of [keys] (depth-first).
+  dynamic _findFirstOfKey(dynamic node, List<String> keys) {
+    if (node is Map) {
+      for (final k in keys) {
+        if (node[k] != null) return node[k];
+      }
+      for (final v in node.values) {
+        final r = _findFirstOfKey(v, keys);
+        if (r != null) return r;
+      }
+    } else if (node is List) {
+      for (final v in node) {
+        final r = _findFirstOfKey(v, keys);
+        if (r != null) return r;
+      }
+    }
+    return null;
+  }
+
+  /// The album/detail HEADER thumbnail specifically (not any thumbnail in the tree).
+  String? _findHeaderThumbnail(dynamic node) {
+    if (node is Map) {
+      for (final headerKey in const ['musicResponsiveHeaderRenderer', 'musicDetailHeaderRenderer']) {
+        final h = node[headerKey];
+        if (h is Map) {
+          final t = _findFirstThumbnail(h['thumbnail'] ?? h);
+          if (t != null) return t;
+        }
+      }
+      for (final v in node.values) {
+        final r = _findHeaderThumbnail(v);
+        if (r != null) return r;
+      }
+    } else if (node is List) {
+      for (final v in node) {
+        final r = _findHeaderThumbnail(v);
+        if (r != null) return r;
+      }
+    }
+    return null;
   }
 
   /// Fetches a shuffled artist radio (YT Music's own popularity-weighted mix).
@@ -359,12 +474,116 @@ class YouTubeService extends ChangeNotifier {
           'thumbnail': thumb,
         });
       }
-      debugPrint('getArtistRadioTracks: "$artist" → ${tracks.length} tracks');
+      // The RD… radio seed is deterministic (same first track every time), so
+      // shuffle for variety — the order isn't meaningful for our finite grab.
+      tracks.shuffle(_rng);
+      debugPrint('getArtistRadioTracks: "$artist" → ${tracks.length} tracks (shuffled)');
       return tracks;
     } catch (e) {
       debugPrint('getArtistRadioTracks failed: $e');
       return [];
     }
+  }
+
+  /// Fetches the artist's OWN songs (not radio) — as many as YT Music exposes —
+  /// in a weighted-random order (popular songs favored early, different each
+  /// call). Returns [] on failure so the caller falls back to the YT Music launch.
+  Future<List<Map<String, String>>> getArtistTracks(String artist) async {
+    try {
+      final data = await _innertubePost('search', {'query': artist});
+      final artistId = _findBrowseId(data, 'UC'); // channel id
+      if (artistId == null) {
+        debugPrint('getArtistTracks: no artist browseId for "$artist"');
+        return [];
+      }
+      final browse = await _innertubePost('browse', {'browseId': artistId});
+      // Prefer the full "Songs" playlist; fall back to the artist page's shelf.
+      final songsPlaylistId = _findSongsPlaylistId(browse);
+      final scoped = songsPlaylistId != null;
+      dynamic root = browse;
+      if (scoped) {
+        final pl = await _innertubePost('browse', {'browseId': songsPlaylistId});
+        if (pl != null) root = pl;
+      }
+      final renderers = <Map>[];
+      _collectByKey(root, 'musicResponsiveListItemRenderer', renderers);
+      final aLower = artist.toLowerCase().trim();
+      final tracks = <Map<String, String>>[];
+      final seen = <String>{};
+      for (final r in renderers) {
+        final parsed = _parseSongRenderer(r);
+        if (parsed == null) continue;
+        final vid = parsed['videoId']!;
+        if (seen.contains(vid)) continue;
+        // On the artist page (not the dedicated Songs playlist) other shelves
+        // ("fans might also like") leak in — keep only this artist's rows.
+        if (!scoped) {
+          final rowArtist = (parsed['artist'] ?? '').toLowerCase();
+          if (rowArtist.isNotEmpty && aLower.isNotEmpty &&
+              !rowArtist.contains(aLower) && !aLower.contains(rowArtist)) {
+            continue;
+          }
+        }
+        if ((parsed['artist'] ?? '').isEmpty) parsed['artist'] = artist;
+        seen.add(vid);
+        tracks.add(parsed);
+      }
+      _weightedShuffle(tracks);
+      debugPrint('getArtistTracks: "$artist" → ${tracks.length} tracks (weighted-random)');
+      return tracks;
+    } catch (e) {
+      debugPrint('getArtistTracks failed: $e');
+      return [];
+    }
+  }
+
+  /// Weighted-random reorder (Efraimidis–Spirakis): earlier (more popular) items
+  /// get a higher weight so they trend toward the front, but a fresh random key
+  /// each call means a different order every time.
+  void _weightedShuffle(List<Map<String, String>> items) {
+    final n = items.length;
+    if (n <= 1) return;
+    final keyed = <MapEntry<double, Map<String, String>>>[];
+    for (int i = 0; i < n; i++) {
+      final w = (n - i).toDouble(); // rank 0 = most popular = highest weight
+      final u = _rng.nextDouble().clamp(1e-9, 1.0);
+      keyed.add(MapEntry(math.pow(u, 1.0 / w).toDouble(), items[i]));
+    }
+    keyed.sort((a, b) => b.key.compareTo(a.key)); // descending
+    for (int i = 0; i < n; i++) {
+      items[i] = keyed[i].value;
+    }
+  }
+
+  /// Finds the artist page's songs shelf (titled "Songs" or "Top songs") and
+  /// returns its full-songs playlist browseId (VLOLAK5uy_…), so we get the whole
+  /// list (~100) rather than just the ~5 shown inline on the artist page.
+  String? _findSongsPlaylistId(dynamic node) {
+    if (node is Map) {
+      final shelf = node['musicShelfRenderer'];
+      if (shelf is Map) {
+        final titleRuns = shelf['title']?['runs'];
+        if (titleRuns is List && titleRuns.isNotEmpty) {
+          final t = (titleRuns[0]?['text'] ?? '').toString().toLowerCase();
+          if (t.contains('song')) {
+            // The full-list link lives on the shelf title's nav or bottomEndpoint.
+            final bid = titleRuns[0]?['navigationEndpoint']?['browseEndpoint']?['browseId'] ??
+                shelf['bottomEndpoint']?['browseEndpoint']?['browseId'];
+            if (bid is String && bid.isNotEmpty) return bid;
+          }
+        }
+      }
+      for (final v in node.values) {
+        final r = _findSongsPlaylistId(v);
+        if (r != null) return r;
+      }
+    } else if (node is List) {
+      for (final v in node) {
+        final r = _findSongsPlaylistId(v);
+        if (r != null) return r;
+      }
+    }
+    return null;
   }
 
   // Recursive helpers for walking the deeply-nested Innertube JSON.
