@@ -4,6 +4,11 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../services/youtube_service.dart';
 import '../services/collab_service.dart';
 
+/// Fixed height of every queue row. A fixed `itemExtent` makes the
+/// scroll-to-now-playing math exact (index * extent), which the old variable-row
+/// estimate got wrong (landing the row at the bottom instead of centered).
+const double _kQueueRowExtent = 64.0;
+
 /// Thin view over [CollabService]. All collab state (socket, playback, session,
 /// auto-DJ) lives in the service so it survives this widget being disposed when
 /// the user navigates away. This widget only renders and forwards user actions.
@@ -34,9 +39,14 @@ class _QueueTabState extends State<QueueTab> {
     if (playingIndex < 0) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_userScrolled || !_scrollController.hasClients) return;
-      final position = (playingIndex * 64.0) - 150.0;
+      // Center the playing row: its top sits at index*extent; offset it back by
+      // half the viewport (minus half a row) so it lands in the middle. Clamp so
+      // we never overscroll past the ends. Rows are a fixed _kQueueRowExtent tall.
+      final pos = _scrollController.position;
+      final target = (playingIndex * _kQueueRowExtent) -
+          (pos.viewportDimension - _kQueueRowExtent) / 2;
       _scrollController.animateTo(
-        position > 0 ? position : 0,
+        target.clamp(0.0, pos.maxScrollExtent),
         duration: const Duration(milliseconds: 500),
         curve: Curves.easeInOut,
       );
@@ -73,47 +83,43 @@ class _QueueTabState extends State<QueueTab> {
   }
 
   Widget _buildHeader(CollabService collab, YouTubeService ytService, ThemeData theme, Color onSurface) {
+    final collabOn = collab.enabled;
+    // A single horizontal row of icon buttons (collab is now an icon like the
+    // rest, freeing vertical space for the queue below).
     return Row(
+      mainAxisAlignment: MainAxisAlignment.end,
       children: [
-        _buildCollabToggle(collab, theme),
-        const SizedBox(width: 8),
-        // Wrap so the icons take the remaining width and flow to a second line
-        // on narrow panels instead of overflowing horizontally.
-        Expanded(
-          child: Wrap(
-            alignment: WrapAlignment.end,
-            spacing: 2,
-            runSpacing: 2,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              _iconBtn(
-                icon: Icons.qr_code,
-                color: _showQrCodeOverlay ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
-                tooltip: 'Show QR Code',
-                onTap: () => setState(() => _showQrCodeOverlay = !_showQrCodeOverlay),
-              ),
-              _iconBtn(
-                icon: collab.allowEditing ? Icons.edit : Icons.edit_off,
-                color: collab.allowEditing ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
-                tooltip: 'Allow Passenger Editing',
-                onTap: () => collab.setAllowEditing(!collab.allowEditing),
-              ),
-              _iconBtn(
-                icon: collab.allowMediaControl ? Icons.play_circle_outline : Icons.not_interested,
-                color: collab.allowMediaControl ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
-                tooltip: 'Allow Media Control',
-                onTap: () => collab.setAllowMediaControl(!collab.allowMediaControl),
-              ),
-              if (ytService.currentQueue.isNotEmpty)
-                _iconBtn(
-                  icon: Icons.delete_sweep,
-                  color: Colors.redAccent,
-                  tooltip: 'Clear Queue',
-                  onTap: () => _confirmClearQueue(collab),
-                ),
-            ],
-          ),
+        _iconBtn(
+          icon: collabOn ? Icons.wifi_tethering : Icons.wifi_tethering_off,
+          color: collabOn ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
+          tooltip: collabOn ? 'Collab on — passenger sharing open' : 'Collab off',
+          onTap: () => collabOn ? collab.disable() : collab.enable(),
         ),
+        _iconBtn(
+          icon: Icons.qr_code,
+          color: _showQrCodeOverlay ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
+          tooltip: 'Show QR Code',
+          onTap: () => setState(() => _showQrCodeOverlay = !_showQrCodeOverlay),
+        ),
+        _iconBtn(
+          icon: collab.allowEditing ? Icons.edit : Icons.edit_off,
+          color: collab.allowEditing ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
+          tooltip: 'Allow Passenger Editing',
+          onTap: () => collab.setAllowEditing(!collab.allowEditing),
+        ),
+        _iconBtn(
+          icon: collab.allowMediaControl ? Icons.play_circle_outline : Icons.not_interested,
+          color: collab.allowMediaControl ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
+          tooltip: 'Allow Media Control',
+          onTap: () => collab.setAllowMediaControl(!collab.allowMediaControl),
+        ),
+        if (ytService.currentQueue.isNotEmpty)
+          _iconBtn(
+            icon: Icons.delete_sweep,
+            color: Colors.redAccent,
+            tooltip: 'Clear Queue',
+            onTap: () => _confirmClearQueue(collab),
+          ),
       ],
     );
   }
@@ -133,44 +139,6 @@ class _QueueTabState extends State<QueueTab> {
     );
   }
 
-  /// The prominent Enable/Disable Collab control — clearly highlighted when on.
-  Widget _buildCollabToggle(CollabService collab, ThemeData theme) {
-    final on = collab.enabled;
-    return Material(
-      color: on ? theme.colorScheme.primary : Colors.transparent,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(30),
-        side: BorderSide(color: on ? theme.colorScheme.primary : Colors.white24, width: 1.5),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(30),
-        onTap: () => on ? collab.disable() : collab.enable(),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                on ? Icons.wifi_tethering : Icons.wifi_tethering_off,
-                size: 18,
-                color: on ? Colors.white : Colors.white54,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                on ? 'COLLAB ON' : 'COLLAB OFF',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.0,
-                  color: on ? Colors.white : Colors.white54,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 
   Widget _buildQrScreen(CollabService collab, ThemeData theme, Color onSurface) {
     // Centre the content when the panel is tall enough, but allow scrolling on
@@ -268,13 +236,15 @@ class _QueueTabState extends State<QueueTab> {
           },
           child: ListView.builder(
             controller: _scrollController,
+            // Fixed row height so the scroll-to-now-playing offset is exact.
+            itemExtent: _kQueueRowExtent,
             itemCount: ytService.currentQueue.length,
             itemBuilder: (context, index) {
               final item = ytService.currentQueue[index];
               final isPlaying = index == playingIndex;
 
               return Padding(
-                padding: const EdgeInsets.only(bottom: 8.0),
+                padding: const EdgeInsets.only(bottom: 6.0),
                 child: Container(
                   decoration: isPlaying
                       ? BoxDecoration(
@@ -283,7 +253,9 @@ class _QueueTabState extends State<QueueTab> {
                           border: Border(left: BorderSide(color: theme.colorScheme.primary, width: 4)),
                         )
                       : null,
-                  padding: isPlaying ? const EdgeInsets.only(left: 8.0, top: 4.0, bottom: 4.0) : EdgeInsets.zero,
+                  // Left inset only when playing (for the border) — no vertical
+                  // padding, so every row fits the fixed _kQueueRowExtent.
+                  padding: isPlaying ? const EdgeInsets.only(left: 8.0) : EdgeInsets.zero,
                   // Transparent Material so the tile's tap-ink has a surface to
                   // paint on above the colored Container (silences the "ListTile
                   // background color or ink splashes may be invisible" warning).
@@ -292,6 +264,8 @@ class _QueueTabState extends State<QueueTab> {
                     child: ListTile(
                     contentPadding: EdgeInsets.zero,
                     dense: true,
+                    visualDensity: VisualDensity.compact,
+                    minVerticalPadding: 0,
                     onTap: () => collab.playAt(index),
                     leading: ClipRRect(
                       borderRadius: BorderRadius.circular(8),

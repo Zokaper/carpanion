@@ -2142,7 +2142,13 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
   /// Plays a favorite by type: song → direct (no flash); album/artist → fetch
   /// tracks natively into the queue; playlist/legacy or a failed native fetch →
   /// fall back to launching YT Music.
-  Future<void> _playFavorite(BuildContext context, Map<String, String> fav) async {
+  /// After starting playback into our queue, flip the sidebar to the queue view
+  /// so the user sees what's playing (not for the legacy YT-Music launch path).
+  void _goToQueueView() {
+    if (mounted && !_showQueue) setState(() => _showQueue = true);
+  }
+
+  Future<void> _playFavorite(BuildContext context, Map<String, String> fav, {String artistMode = 'radio'}) async {
     final type = fav['type'] ?? 'playlist';
     final collab = context.read<CollabService>();
     final yt = context.read<YouTubeService>();
@@ -2157,6 +2163,7 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
           artist: fav['subtitle'] ?? '',
           thumbnail: fav['thumbnail'] ?? '',
         );
+        _goToQueueView();
         return;
       }
     } else if (type == 'album') {
@@ -2164,13 +2171,22 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
       final tracks = await yt.getAlbumTracks(fav['title'] ?? '', fav['subtitle'] ?? '');
       if (tracks.isNotEmpty) {
         await collab.loadQueueAndPlay(tracks);
+        _goToQueueView();
         return;
       }
     } else if (type == 'artist') {
-      messenger.showSnackBar(SnackBar(content: Text('Starting ${fav['title']} radio…'), duration: const Duration(seconds: 2)));
-      final tracks = await yt.getArtistRadioTracks(fav['title'] ?? fav['subtitle'] ?? '');
+      final name = fav['title'] ?? fav['subtitle'] ?? '';
+      final isRadio = artistMode == 'radio';
+      messenger.showSnackBar(SnackBar(
+        content: Text(isRadio ? 'Starting $name radio…' : 'Playing $name…'),
+        duration: const Duration(seconds: 2),
+      ));
+      final tracks = isRadio
+          ? await yt.getArtistRadioTracks(name)
+          : await yt.getArtistTracks(name);
       if (tracks.isNotEmpty) {
         await collab.loadQueueAndPlay(tracks);
+        _goToQueueView();
         return;
       }
     }
@@ -2306,9 +2322,9 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
                             ),
                             child: Center(
                               child: Text(
-                                "COLLAB", 
+                                "QUEUE",
                                 style: TextStyle(
-                                  color: _showQueue ? Colors.white : onSurface.withOpacity(0.6), 
+                                  color: _showQueue ? Colors.white : onSurface.withOpacity(0.6),
                                   fontSize: 10, 
                                   fontWeight: FontWeight.bold, 
                                   letterSpacing: 1.2
@@ -2333,15 +2349,21 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
             itemCount: provider.favorites.length,
             padding: const EdgeInsets.only(top: 4.0),
             itemBuilder: (context, index) {
+              final fav = provider.favorites[index];
+              final isArtist = (fav['type'] ?? '') == 'artist';
               return Padding(
                 padding: EdgeInsets.only(bottom: index == provider.favorites.length - 1 ? 0 : 8.0),
                 child: _PlaylistCard(
-                  title: provider.favorites[index]['title'] ?? 'Unknown',
-                  subtitle: provider.favorites[index]['subtitle'] ?? 'YouTube Music Playlist',
+                  title: fav['title'] ?? 'Unknown',
+                  subtitle: fav['subtitle'] ?? 'YouTube Music Playlist',
                   startColor: startColors[index % startColors.length],
                   endColor: endColors[index % endColors.length],
-                  icon: _iconForFavoriteType(provider.favorites[index]['type'], icons[index % icons.length]),
-                  onTap: () => _playFavorite(context, provider.favorites[index]),
+                  icon: _iconForFavoriteType(fav['type'], icons[index % icons.length]),
+                  // Artist favorites offer a Radio vs Artist choice on tap; all
+                  // other types play immediately.
+                  onTap: isArtist ? null : () => _playFavorite(context, fav),
+                  onRadioTap: isArtist ? () => _playFavorite(context, fav, artistMode: 'radio') : null,
+                  onArtistTap: isArtist ? () => _playFavorite(context, fav, artistMode: 'artist') : null,
                   onLongPress: () => provider.removeFavoriteAt(index),
                 ),
               );
@@ -2359,7 +2381,11 @@ class _PlaylistCard extends StatefulWidget {
   final Color startColor;
   final Color endColor;
   final IconData icon;
-  final VoidCallback onTap;
+  /// Single-tap play (song/album/playlist). Null for artist cards, which use
+  /// [onRadioTap]/[onArtistTap] and reveal a Radio/Artist choice on tap instead.
+  final VoidCallback? onTap;
+  final VoidCallback? onRadioTap;
+  final VoidCallback? onArtistTap;
   final VoidCallback? onLongPress;
 
   const _PlaylistCard({
@@ -2368,7 +2394,9 @@ class _PlaylistCard extends StatefulWidget {
     required this.startColor,
     required this.endColor,
     required this.icon,
-    required this.onTap,
+    this.onTap,
+    this.onRadioTap,
+    this.onArtistTap,
     this.onLongPress,
   });
 
@@ -2378,6 +2406,42 @@ class _PlaylistCard extends StatefulWidget {
 
 class _PlaylistCardState extends State<_PlaylistCard> with SingleTickerProviderStateMixin {
   double _scale = 1.0;
+  bool _showChoice = false;
+
+  bool get _hasChoice => widget.onRadioTap != null || widget.onArtistTap != null;
+
+  void _handleTap() {
+    if (_hasChoice) {
+      setState(() => _showChoice = !_showChoice);
+    } else {
+      widget.onTap?.call();
+    }
+  }
+
+  Widget _choiceButton(String label, IconData icon, VoidCallback? onTap, ThemeData theme) {
+    return GestureDetector(
+      onTap: () {
+        setState(() => _showChoice = false);
+        onTap?.call();
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.primary.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: theme.colorScheme.primary.withOpacity(0.5)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 12, color: theme.colorScheme.primary),
+            const SizedBox(width: 4),
+            Text(label, style: TextStyle(color: theme.colorScheme.primary, fontSize: 10, fontWeight: FontWeight.bold)),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2388,7 +2452,7 @@ class _PlaylistCardState extends State<_PlaylistCard> with SingleTickerProviderS
       onTapDown: (_) => setState(() => _scale = 0.96),
       onTapUp: (_) => setState(() => _scale = 1.0),
       onTapCancel: () => setState(() => _scale = 1.0),
-      onTap: widget.onTap,
+      onTap: _handleTap,
       onLongPress: widget.onLongPress,
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
@@ -2418,41 +2482,49 @@ class _PlaylistCardState extends State<_PlaylistCard> with SingleTickerProviderS
                   ),
                 ),
                 const SizedBox(width: 10),
-                
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        widget.title,
-                        style: TextStyle(
-                          color: onSurface,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
+
+                // When showing the artist choice, collapse the text to make room.
+                if (_hasChoice && _showChoice) ...[
+                  _choiceButton('Radio', Icons.radio, widget.onRadioTap, theme),
+                  const SizedBox(width: 6),
+                  _choiceButton('Artist', Icons.person, widget.onArtistTap, theme),
+                  const Spacer(),
+                  Icon(Icons.close, color: onSurface.withOpacity(0.5), size: 18),
+                ] else ...[
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.title,
+                          style: TextStyle(
+                            color: onSurface,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 1),
-                      Text(
-                        widget.subtitle,
-                        style: TextStyle(
-                          color: onSurface.withOpacity(0.7),
-                          fontSize: 9,
+                        const SizedBox(height: 1),
+                        Text(
+                          widget.subtitle,
+                          style: TextStyle(
+                            color: onSurface.withOpacity(0.7),
+                            fontSize: 9,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-                
-                Icon(
-                  Icons.play_circle_outline,
-                  color: onSurface.withOpacity(0.8),
-                  size: 20,
-                ),
+                  Icon(
+                    _hasChoice ? Icons.more_horiz : Icons.play_circle_outline,
+                    color: onSurface.withOpacity(0.8),
+                    size: 20,
+                  ),
+                ],
               ],
             ),
           ),
