@@ -65,7 +65,7 @@ class _WelcomeOverlayWidgetState extends State<WelcomeOverlayWidget> {
       _stagedMediaUrl = mediaText;
     }
 
-    if (_startDashcamDefault || _startDashcam) {
+    if (provider.featDashcam && (_startDashcamDefault || _startDashcam)) {
       try {
         await platform.invokeMethod('startDashcam');
         await Future.delayed(const Duration(milliseconds: 1000)); // give dashcam time to start
@@ -75,7 +75,7 @@ class _WelcomeOverlayWidgetState extends State<WelcomeOverlayWidget> {
     }
 
     bool launchedMaps = false;
-    if (_stagedDestination.isNotEmpty) {
+    if (provider.featMapsAutolaunch && _stagedDestination.isNotEmpty) {
       await _launchMaps(_stagedDestination);
       launchedMaps = true;
     }
@@ -389,7 +389,10 @@ class _WelcomeOverlayWidgetState extends State<WelcomeOverlayWidget> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          // Dashcam Controls
+                          // Dashcam Controls (hidden when the feature is off)
+                          if (!provider.featDashcam)
+                            const SizedBox.shrink()
+                          else
                           Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisSize: MainAxisSize.min,

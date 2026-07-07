@@ -13,7 +13,7 @@ import 'package:flutter_media_controller/flutter_media_controller.dart';
 import 'speedometer_widget.dart';
 import 'theme/dynamic_theme.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
-import 'ui/settings_dialog.dart';
+import 'ui/settings_screen.dart';
 import 'ui/sidebar_tabs.dart';
 import 'ui/phone_tab.dart';
 import 'ui/welcome_overlay.dart';
@@ -93,12 +93,31 @@ class DashboardProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  // Fullscreen Settings page (rendered as a top-level Stack layer, like the
+  // welcome overlay) instead of a floating dialog.
+  bool _showSettingsUI = false;
+  bool get showSettingsUI => _showSettingsUI;
+
+  void forceShowSettingsUI() {
+    _showSettingsUI = true;
+    notifyListeners();
+  }
+
+  void dismissSettingsUI() {
+    _showSettingsUI = false;
+    notifyListeners();
+  }
+
   Future<void> updateLastActiveTime() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('lastActiveTime', DateTime.now().millisecondsSinceEpoch);
   }
 
   Future<void> checkNewDrive() async {
+    if (!_featWelcomeOverlay) {
+      _showWelcomeUI = false;
+      return;
+    }
     final prefs = await SharedPreferences.getInstance();
     final lastTime = prefs.getInt('lastActiveTime');
     bool shouldShow = false;
@@ -242,6 +261,7 @@ class DashboardProvider with ChangeNotifier {
     _isAdaptiveBrightness = !_isAdaptiveBrightness;
     _lastSystemControlWrite = DateTime.now();
     notifyListeners();
+    _persistBool(_kFeatAdaptiveBrightness, _isAdaptiveBrightness);
     try {
       await platform.invokeMethod('setSystemBrightness', {'adaptive': _isAdaptiveBrightness});
     } catch (e) {
@@ -275,6 +295,127 @@ class DashboardProvider with ChangeNotifier {
       _selectedSidebarTab = index;
       notifyListeners();
     }
+  }
+
+  // ── Feature flags (persisted) ───────────────────────────────────────────
+  // Each gates an optional feature so the user can turn it off in Settings.
+  // Defaults preserve prod behavior. Setters persist → notify → start/stop
+  // the underlying work. A feature stays ON but dormant if its required
+  // permission is missing (consumers check `flag && permissionGranted`).
+  bool _featSpeedLimit = true;
+  bool _featSpeedWarning = true;
+  bool _featDashcam = true;
+  bool _featWelcomeOverlay = true;
+  bool _featMapsAutolaunch = true;
+  bool _featNotifications = true;
+  bool _featShareFavorites = true;
+  int _phoneMode = 1; // 0=Off, 1=In-app only, 2=Full (default dialer)
+
+  bool get featSpeedLimit => _featSpeedLimit;
+  bool get featSpeedWarning => _featSpeedWarning;
+  bool get featDashcam => _featDashcam;
+  bool get featWelcomeOverlay => _featWelcomeOverlay;
+  bool get featMapsAutolaunch => _featMapsAutolaunch;
+  bool get featNotifications => _featNotifications;
+  bool get featShareFavorites => _featShareFavorites;
+  int get phoneMode => _phoneMode;
+
+  static const String _kFeatSpeedLimit = 'feat_speed_limit';
+  static const String _kFeatSpeedWarning = 'feat_speed_warning';
+  static const String _kFeatDashcam = 'feat_dashcam';
+  static const String _kFeatWelcomeOverlay = 'feat_welcome_overlay';
+  static const String _kFeatMapsAutolaunch = 'feat_maps_autolaunch';
+  static const String _kFeatNotifications = 'feat_notifications';
+  static const String _kFeatShareFavorites = 'feat_share_favorites';
+  static const String _kFeatAdaptiveBrightness = 'feat_adaptive_brightness';
+  static const String _kPhoneMode = 'phone_mode';
+
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    _featSpeedLimit = prefs.getBool(_kFeatSpeedLimit) ?? true;
+    _featSpeedWarning = prefs.getBool(_kFeatSpeedWarning) ?? true;
+    _featDashcam = prefs.getBool(_kFeatDashcam) ?? true;
+    _featWelcomeOverlay = prefs.getBool(_kFeatWelcomeOverlay) ?? true;
+    _featMapsAutolaunch = prefs.getBool(_kFeatMapsAutolaunch) ?? true;
+    _featNotifications = prefs.getBool(_kFeatNotifications) ?? true;
+    _featShareFavorites = prefs.getBool(_kFeatShareFavorites) ?? true;
+    _isAdaptiveBrightness =
+        prefs.getBool(_kFeatAdaptiveBrightness) ?? _isAdaptiveBrightness;
+    _phoneMode = prefs.getInt(_kPhoneMode) ?? 1;
+  }
+
+  Future<void> _persistBool(String key, bool v) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(key, v);
+  }
+
+  Future<void> setFeatSpeedLimit(bool v) async {
+    if (_featSpeedLimit == v) return;
+    _featSpeedLimit = v;
+    notifyListeners();
+    await _persistBool(_kFeatSpeedLimit, v);
+  }
+
+  Future<void> setFeatSpeedWarning(bool v) async {
+    if (_featSpeedWarning == v) return;
+    _featSpeedWarning = v;
+    notifyListeners();
+    await _persistBool(_kFeatSpeedWarning, v);
+  }
+
+  Future<void> setFeatDashcam(bool v) async {
+    if (_featDashcam == v) return;
+    _featDashcam = v;
+    notifyListeners();
+    if (v) {
+      _startDashcamPolling();
+    } else {
+      stopDashcamPolling();
+    }
+    await _persistBool(_kFeatDashcam, v);
+  }
+
+  Future<void> setFeatWelcomeOverlay(bool v) async {
+    if (_featWelcomeOverlay == v) return;
+    _featWelcomeOverlay = v;
+    if (!v) _showWelcomeUI = false;
+    notifyListeners();
+    await _persistBool(_kFeatWelcomeOverlay, v);
+  }
+
+  Future<void> setFeatMapsAutolaunch(bool v) async {
+    if (_featMapsAutolaunch == v) return;
+    _featMapsAutolaunch = v;
+    notifyListeners();
+    await _persistBool(_kFeatMapsAutolaunch, v);
+  }
+
+  Future<void> setFeatNotifications(bool v) async {
+    if (_featNotifications == v) return;
+    _featNotifications = v;
+    notifyListeners();
+    await _persistBool(_kFeatNotifications, v);
+  }
+
+  Future<void> setFeatShareFavorites(bool v) async {
+    if (_featShareFavorites == v) return;
+    _featShareFavorites = v;
+    notifyListeners();
+    if (v) {
+      initShareHandler();
+    } else {
+      _shareSubscription?.cancel();
+      _shareSubscription = null;
+    }
+    await _persistBool(_kFeatShareFavorites, v);
+  }
+
+  Future<void> setPhoneMode(int mode) async {
+    if (_phoneMode == mode) return;
+    _phoneMode = mode;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kPhoneMode, mode);
   }
 
   Timer? _mediaTimer;
@@ -353,16 +494,17 @@ class DashboardProvider with ChangeNotifier {
   StreamSubscription<Position>? _positionStreamSubscription;
 
   Future<void> initialize() async {
+    await _loadSettings();
     await checkNewDrive();
     checkPermissions();
     await checkLocationSettingsAndPermissions();
     _startLocationUpdates();
     _startMediaPolling();
-    _startDashcamPolling();
+    if (_featDashcam) _startDashcamPolling();
     _startNetworkPolling();
-    
+
     await loadFavorites();
-    initShareHandler();
+    if (_featShareFavorites) initShareHandler();
 
     // Listen for call state updates from Android native
     platform.setMethodCallHandler((call) async {
@@ -395,6 +537,20 @@ class DashboardProvider with ChangeNotifier {
   bool get isMuted => _isMuted;
 
   void _handleCallStateChange(int stateInt, String number) async {
+    // Phone handling disabled → never surface the in-app call UI.
+    if (_phoneMode == 0) {
+      if (_callState != 'IDLE') {
+        _callState = 'IDLE';
+        _callNumber = '';
+        _callName = '';
+        _callDurationSeconds = 0;
+        _callDurationTimer?.cancel();
+        _callDurationTimer = null;
+        _callStartTime = null;
+        notifyListeners();
+      }
+      return;
+    }
     // 0: NEW, 1: DIALING, 2: RINGING, 3: HOLDING, 4: ACTIVE, 7: DISCONNECTED
     String stateStr = 'IDLE';
     if (stateInt == 1) stateStr = 'DIALING';
@@ -575,7 +731,7 @@ class DashboardProvider with ChangeNotifier {
             // instead of being silently skipped for another 200 m.
             if (!_isFetchingSpeedLimit) {
               _lastSpeedLimitPosition = position;
-              _fetchSpeedLimit(position);
+              if (_featSpeedLimit) _fetchSpeedLimit(position);
               _fetchStreetName(position);
             }
         }
@@ -604,6 +760,15 @@ class DashboardProvider with ChangeNotifier {
     });
   }
   
+  void stopDashcamPolling() {
+    _dashcamTimer?.cancel();
+    _dashcamTimer = null;
+    if (_dashcamRecording) {
+      _dashcamRecording = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> stopDashcam() async {
     try {
       await platform.invokeMethod('stopDashcam');
@@ -1274,6 +1439,14 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
               return const SizedBox.shrink();
             },
           ),
+          Consumer<DashboardProvider>(
+            builder: (context, prov, child) {
+              if (prov.showSettingsUI) {
+                return const SettingsScreen();
+              }
+              return const SizedBox.shrink();
+            },
+          ),
         ],
       ),
     );
@@ -1481,10 +1654,7 @@ class HeaderBarWidget extends StatelessWidget {
                 const SizedBox(width: 8),
                 GestureDetector(
                   onTap: () {
-                    showDialog(
-                      context: context,
-                      builder: (context) => const SettingsDialog(),
-                    );
+                    Provider.of<DashboardProvider>(context, listen: false).forceShowSettingsUI();
                   },
                   child: Container(
                     padding: const EdgeInsets.all(8),

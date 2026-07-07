@@ -25,7 +25,7 @@ class SpeedometerWidget extends StatelessWidget {
     double? warningPct;
     double? dangerPct;
 
-    if (provider.speedLimit != '?') {
+    if (provider.featSpeedWarning && provider.speedLimit != '?') {
       final intLimit = int.tryParse(provider.speedLimit);
       if (intLimit != null) {
         // provider.speed is in m/s, so we calculate km/h for the Saher logic
@@ -108,27 +108,28 @@ class SpeedometerWidget extends StatelessWidget {
                     ),
                     
                     // Speed Limit Sign
-                    Positioned(
-                      bottom: 0,
-                      child: Container(
-                         width: 44,
-                         height: 44,
-                         decoration: BoxDecoration(
-                           color: Colors.white, // Speed signs are always white bg with red border
-                           shape: BoxShape.circle,
-                           border: Border.all(color: Colors.red, width: 4),
-                         ),
-                         alignment: Alignment.center,
-                         child: Text(
-                           provider.speedLimit,
-                           style: const TextStyle(
-                             color: Colors.black,
-                             fontWeight: FontWeight.w900,
-                             fontSize: 16,
+                    if (provider.featSpeedLimit)
+                      Positioned(
+                        bottom: 0,
+                        child: Container(
+                           width: 44,
+                           height: 44,
+                           decoration: BoxDecoration(
+                             color: Colors.white, // Speed signs are always white bg with red border
+                             shape: BoxShape.circle,
+                             border: Border.all(color: Colors.red, width: 4),
                            ),
-                         ),
+                           alignment: Alignment.center,
+                           child: Text(
+                             provider.speedLimit,
+                             style: const TextStyle(
+                               color: Colors.black,
+                               fontWeight: FontWeight.w900,
+                               fontSize: 16,
+                             ),
+                           ),
+                        ),
                       ),
-                    ),
                   ],
                 ),
               ),

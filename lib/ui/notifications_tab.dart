@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
+import '../main.dart';
 
 class NotificationsTab extends StatefulWidget {
   const NotificationsTab({super.key});
@@ -30,8 +32,26 @@ class _NotificationsTabState extends State<NotificationsTab> {
   @override
   void initState() {
     super.initState();
-    _fetchNotifications();
-    _timer = Timer.periodic(const Duration(seconds: 3), (_) => _fetchNotifications());
+    // Polling is started/stopped in didChangeDependencies based on the
+    // `feat_notifications` flag so toggling it in Settings takes effect live.
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final enabled = Provider.of<DashboardProvider>(context).featNotifications;
+    if (enabled && _timer == null) {
+      _fetchNotifications();
+      _timer = Timer.periodic(const Duration(seconds: 3), (_) => _fetchNotifications());
+    } else if (!enabled && _timer != null) {
+      _timer!.cancel();
+      _timer = null;
+      if (_notifications.isNotEmpty) {
+        _notifications = [];
+        _lastNotifSignature = '';
+        _iconCache.clear();
+      }
+    }
   }
 
   Future<void> _fetchNotifications() async {
@@ -505,6 +525,33 @@ class _NotificationsTabState extends State<NotificationsTab> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
+
+    final notifEnabled = context.watch<DashboardProvider>().featNotifications;
+    if (!notifEnabled) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.notifications_off_outlined, color: onSurface.withOpacity(0.3), size: 40),
+              const SizedBox(height: 12),
+              Text(
+                "Notifications are turned off",
+                style: TextStyle(color: onSurface.withOpacity(0.6), fontSize: 14, fontWeight: FontWeight.w600),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                "Enable notification tracking in Settings to see alerts here.",
+                style: TextStyle(color: onSurface.withOpacity(0.4), fontSize: 12),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     if (_trackedChatId != null) {
       return TrackedChatView(
