@@ -49,12 +49,12 @@ without the real phone, using the Android emulator + a local backend:
   3000, serves the socket.io relay **and** the passenger PWA. Node LTS required.
 * **Dashboard**: run on the **`S25plus` emulator** (an AVD built to match the real device —
   see below), pointed at the local backend:
-  `puro flutter run --dart-define=BACKEND_URL=http://10.0.2.2:3000 --dart-define=DEV_BYPASS_AUTH=true`
+  `puro flutter run --dart-define=BACKEND_URL=http://10.0.2.2:3000`
   (or `scripts/run-dashboard.ps1`). `10.0.2.2` = host localhost from inside the emulator.
-* **Two test-only dart-defines** (both default to prod behavior, safe to keep):
-  `BACKEND_URL` overrides the hardcoded backend (`collab_service.dart`); `DEV_BYPASS_AUTH=true`
-  skips the Google-sign-in gate on the collab tab (`queue_tab.dart`) — collab/favorites need
-  no OAuth. A dev-only `network_security_config.xml` allows cleartext to 10.0.2.2/localhost.
+* **Test-only dart-define**: `BACKEND_URL` overrides the hardcoded backend (`collab_service.dart`);
+  defaults to prod, safe to keep. A dev-only `network_security_config.xml` allows cleartext to
+  10.0.2.2/localhost. *(The old `DEV_BYPASS_AUTH` flag is gone — the Collab tab no longer has a
+  Google-sign-in gate, so no bypass is needed; sign-in is optional, in Settings, for demo search.)*
 * **Passenger PWA**: open `http://localhost:3000/?session=<code>` (session code is on the
   dashboard's COLLAB tab).
 * **Can't test without the real phone**: actual YT Music audio, auto-advance on song-end, and
@@ -143,8 +143,15 @@ There is ONE queue. **`_enabled` = "passenger sharing is open", NOT playback.**
 
 ## 🔎 YouTube Music integration (`lib/services/youtube_service.dart`)
 
-- **OAuth** via `google_sign_in` (youtube scope) → `YouTubeApi` (Data API v3). Used for
-  the demo/"search YouTube" path (`searchSongs`) and fetching a video's real title.
+- **OAuth** via `google_sign_in` (youtube scope) → `YouTubeApi` (Data API v3). **Optional /
+  on-demand** — it powers ONLY the passenger "search YouTube for demos" toggle (`searchSongs`,
+  Data API search of all of YouTube, incl. unreleased/bootleg uploads not in the YT Music catalog)
+  and a title-lookup fallback for bare shared links (`_fetchYouTubeVideoTitle`). Both degrade
+  gracefully when signed out (`_youtubeApi == null` → `[]`/`null`). There is **no sign-in gate**;
+  sign-in lives in **Settings → Media & Collab** (`settings_screen.dart`, the `_GoogleAccountCard`).
+  Default passenger search, playback, queue ops and all Favorites are anonymous (Innertube +
+  MediaSession) and need no OAuth. No YT-playlist API writes remain (`addVideoToPlaylist` only
+  appends to the local queue despite its legacy name).
 - **Innertube (WEB_REMIX, anonymous)** — the good stuff. Public API key, POST to
   `music.youtube.com/youtubei/v1/...`:
   - **`searchYTMusicSongs(query, {limit})`** — "Songs" filter

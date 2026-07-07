@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../main.dart';
 import '../theme/dynamic_theme.dart';
 import '../services/collab_service.dart';
+import '../services/youtube_service.dart';
 
 /// Fullscreen, reorganized settings page. Rendered as a top-level Stack layer
 /// (see main.dart) rather than a floating dialog. Each feature can be toggled
@@ -206,7 +207,112 @@ class _MediaCollabSection extends StatelessWidget {
             indent: true,
           ),
         ],
+        const _GoogleAccountCard(),
       ],
+    );
+  }
+}
+
+/// Optional Google sign-in — only powers the passenger "search YouTube for demos"
+/// toggle (the YouTube Data API). Everything else in Collab/Favorites is anonymous,
+/// so this is a convenience, not a requirement.
+class _GoogleAccountCard extends StatelessWidget {
+  const _GoogleAccountCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final yt = context.watch<YouTubeService>();
+    final theme = Theme.of(context);
+    final onSurface = theme.colorScheme.onSurface;
+    final signedIn = yt.isSignedIn;
+    final email = yt.currentUser?.email ?? '';
+
+    return _CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "YouTube account (demo search)",
+                      style: TextStyle(color: onSurface, fontSize: 15, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      "Optional. Sign in to let passengers search all of YouTube for demos "
+                      "and unreleased tracks (the \"Search YouTube\" toggle). Normal YT Music "
+                      "search, playback and favorites work signed out.",
+                      style: TextStyle(color: onSurface.withOpacity(0.6), fontSize: 12, height: 1.3),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Icon(
+                signedIn ? Icons.check_circle : Icons.account_circle_outlined,
+                color: signedIn ? Colors.green : onSurface.withOpacity(0.4),
+                size: 16,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  signedIn ? (email.isNotEmpty ? email : "Signed in") : "Not signed in",
+                  style: TextStyle(color: onSurface.withOpacity(0.75), fontSize: 12, fontWeight: FontWeight.w500),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (signedIn)
+                TextButton(
+                  onPressed: () => yt.signOut(),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: Text(
+                    "SIGN OUT",
+                    style: TextStyle(color: onSurface.withOpacity(0.6), fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                )
+              else
+                TextButton(
+                  onPressed: () async {
+                    try {
+                      await yt.signIn();
+                    } catch (e) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text("Google sign-in failed: $e"),
+                            duration: const Duration(seconds: 4),
+                          ),
+                        );
+                      }
+                    }
+                  },
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    backgroundColor: theme.colorScheme.primary.withOpacity(0.12),
+                  ),
+                  child: Text(
+                    "SIGN IN",
+                    style: TextStyle(color: theme.colorScheme.primary, fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

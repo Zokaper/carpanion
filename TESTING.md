@@ -48,18 +48,18 @@ Leave it running. It prints `Server running on port 3000`.
 ```
 This launches the `dev_phone` emulator if needed and runs with
 `--dart-define=BACKEND_URL=http://10.0.2.2:3000` (`10.0.2.2` = the host's localhost from inside
-the emulator) plus `--dart-define=DEV_BYPASS_AUTH=true`. Equivalent manual command:
+the emulator). Equivalent manual command:
 ```powershell
-puro flutter run --dart-define=BACKEND_URL=http://10.0.2.2:3000 --dart-define=DEV_BYPASS_AUTH=true
+puro flutter run --dart-define=BACKEND_URL=http://10.0.2.2:3000
 ```
 
-> **`DEV_BYPASS_AUTH`** skips the Google sign-in gate on the collab/queue tab (`queue_tab.dart`).
-> Collab's actual mechanics — queue ops, YT Music Innertube search/resolve, native playback — are
-> all anonymous and need no OAuth, so this lets you exercise collab on the emulator without adding
-> a Google account or registering the debug SHA-1 in the Cloud Console. It defaults to `false`, so
-> normal/production builds are unaffected. (To test *real* Google sign-in instead, drop this flag,
-> add a Google account to the emulator, and register this machine's debug-keystore SHA-1 in your
-> Google Cloud Console OAuth client.)
+> **No auth needed for Collab.** The Collab/queue tab has **no Google sign-in gate** — its
+> mechanics (queue ops, YT Music Innertube search/resolve, native playback) are all anonymous.
+> Google sign-in is **optional** and only powers the passenger "search YouTube for demos" toggle;
+> it lives in **Settings → Media & Collab**. (The old `DEV_BYPASS_AUTH` dart-define is gone — there
+> is no gate left to bypass. To test *real* Google sign-in, add a Google account to the emulator and
+> register this machine's debug-keystore SHA-1 in your Google Cloud Console OAuth client, then use
+> the SIGN IN button in Settings.)
 
 **3. Open the passenger PWA** in Chrome on the laptop:
 - In the app, open the **Collab / Queue** tab and tap **COLLAB ON**. Note the **session code**

@@ -31,7 +31,7 @@ if ($devices -notmatch "emulator-") {
     Write-Host "Emulator already running." -ForegroundColor Green
 }
 
-Write-Host "Running dashboard with BACKEND_URL=$BackendUrl (auth gate bypassed for local test) ..." -ForegroundColor Cyan
-# DEV_BYPASS_AUTH skips the Google sign-in gate on the collab/queue tab so collab
-# can be tested without OAuth. Never set this in a real build.
-puro flutter run --dart-define=BACKEND_URL=$BackendUrl --dart-define=DEV_BYPASS_AUTH=true
+Write-Host "Running dashboard with BACKEND_URL=$BackendUrl ..." -ForegroundColor Cyan
+# Collab has no sign-in gate — its mechanics are anonymous. Google sign-in is
+# optional (Settings -> Media & Collab) and only powers the "demo" YouTube search.
+puro flutter run --dart-define=BACKEND_URL=$BackendUrl

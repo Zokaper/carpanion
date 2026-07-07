@@ -4,12 +4,6 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../services/youtube_service.dart';
 import '../services/collab_service.dart';
 
-/// Dev-only: skip the Google sign-in gate on the collab/queue tab so the feature
-/// can be exercised against a local backend without OAuth (queue ops, Innertube
-/// search/resolve and native playback are all anonymous). Never enabled in a
-/// normal build — pass --dart-define=DEV_BYPASS_AUTH=true for local testing.
-const bool kDevBypassAuth = bool.fromEnvironment('DEV_BYPASS_AUTH');
-
 /// Thin view over [CollabService]. All collab state (socket, playback, session,
 /// auto-DJ) lives in the service so it survives this widget being disposed when
 /// the user navigates away. This widget only renders and forwards user actions.
@@ -56,10 +50,9 @@ class _QueueTabState extends State<QueueTab> {
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
 
-    if (!ytService.isSignedIn && !kDevBypassAuth) {
-      return _buildSignIn(ytService);
-    }
-
+    // No sign-in gate: Collab (default YT Music search + queue/playback/favorites)
+    // is fully anonymous. Google sign-in is optional and only powers the "search
+    // YouTube for demos" toggle — surfaced in Settings, not as a wall here.
     final playingIndex = collab.currentPlayingIndex;
     _maybeAutoScroll(playingIndex);
 
@@ -75,35 +68,6 @@ class _QueueTabState extends State<QueueTab> {
                 : _buildQueueList(collab, ytService, theme, onSurface, playingIndex),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildSignIn(YouTubeService ytService) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 32.0),
-      child: Center(
-        child: ElevatedButton.icon(
-          onPressed: () async {
-            try {
-              await ytService.signIn();
-            } catch (e) {
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text("Google Sign-In failed: $e\nEnsure SHA-1 is configured in Google Cloud Console."),
-                    duration: const Duration(seconds: 4),
-                  ),
-                );
-              }
-            }
-          },
-          icon: const Icon(Icons.login),
-          label: const Text("Sign in with Google"),
-          style: ElevatedButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-          ),
-        ),
       ),
     );
   }
