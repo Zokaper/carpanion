@@ -4,6 +4,12 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../services/youtube_service.dart';
 import '../services/collab_service.dart';
 
+/// Dev-only: skip the Google sign-in gate on the collab/queue tab so the feature
+/// can be exercised against a local backend without OAuth (queue ops, Innertube
+/// search/resolve and native playback are all anonymous). Never enabled in a
+/// normal build — pass --dart-define=DEV_BYPASS_AUTH=true for local testing.
+const bool kDevBypassAuth = bool.fromEnvironment('DEV_BYPASS_AUTH');
+
 /// Thin view over [CollabService]. All collab state (socket, playback, session,
 /// auto-DJ) lives in the service so it survives this widget being disposed when
 /// the user navigates away. This widget only renders and forwards user actions.
@@ -50,7 +56,7 @@ class _QueueTabState extends State<QueueTab> {
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
 
-    if (!ytService.isSignedIn) {
+    if (!ytService.isSignedIn && !kDevBypassAuth) {
       return _buildSignIn(ytService);
     }
 

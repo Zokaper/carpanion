@@ -1117,7 +1117,13 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     return Scaffold(
       body: Stack(
         children: [
+          // Immersive in-car UI hides the system bars (see main()), so don't reserve
+          // their insets — draw edge-to-edge to fill the whole display.
           SafeArea(
+        left: false,
+        top: false,
+        right: false,
+        bottom: false,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
           child: Column(

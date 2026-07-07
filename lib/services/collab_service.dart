@@ -18,7 +18,12 @@ import 'youtube_service.dart';
 /// id / enabled flag / current index (the queue itself is persisted by
 /// [YouTubeService]).
 class CollabService extends ChangeNotifier {
-  static const String backendUrl = "https://carpanion.onrender.com";
+  // Defaults to the hosted backend. Override for local testing with
+  // --dart-define=BACKEND_URL=http://10.0.2.2:3000 (10.0.2.2 = host localhost from the emulator).
+  static const String backendUrl = String.fromEnvironment(
+    'BACKEND_URL',
+    defaultValue: "https://carpanion.onrender.com",
+  );
   static const String _sessionKey = 'collab_session_id';
   static const String _enabledKey = 'collab_enabled';
   static const String _indexKey = 'collab_index';

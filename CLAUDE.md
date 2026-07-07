@@ -39,6 +39,43 @@ Uses **`puro`** for Flutter version management — always prefix Flutter command
 
 ---
 
+## 🧪 Local testing (laptop, no phone)
+
+Full runbook is in **`TESTING.md`**. In short — you can exercise the app on this machine
+without the real phone, using the Android emulator + a local backend:
+
+* **Backend + PWA**: `node server.js` in `backend/` (or `scripts/start-backend.ps1`) — port
+  3000, serves the socket.io relay **and** the passenger PWA. Node LTS required.
+* **Dashboard**: run on the **`S25plus` emulator** (an AVD built to match the real device —
+  see below), pointed at the local backend:
+  `puro flutter run --dart-define=BACKEND_URL=http://10.0.2.2:3000 --dart-define=DEV_BYPASS_AUTH=true`
+  (or `scripts/run-dashboard.ps1`). `10.0.2.2` = host localhost from inside the emulator.
+* **Two test-only dart-defines** (both default to prod behavior, safe to keep):
+  `BACKEND_URL` overrides the hardcoded backend (`collab_service.dart`); `DEV_BYPASS_AUTH=true`
+  skips the Google-sign-in gate on the collab tab (`queue_tab.dart`) — collab/favorites need
+  no OAuth. A dev-only `network_security_config.xml` allows cleartext to 10.0.2.2/localhost.
+* **Passenger PWA**: open `http://localhost:3000/?session=<code>` (session code is on the
+  dashboard's COLLAB tab).
+* **Can't test without the real phone**: actual YT Music audio, auto-advance on song-end, and
+  now-playing highlight (native MediaSession polling is empty on the emulator).
+
+### 📱 Target device & the `S25plus` emulator
+The app runs on a **Samsung Galaxy S25+ phone in landscape** (not a tablet, despite the
+"head-unit" framing; it forces landscape). **Layout must be validated at that device's size** —
+an AVD named **`S25plus`** exists for this: **1080×2340 @ 450 dpi** (landscape 2340×1080,
+~832×384 dp). `scripts/run-dashboard.ps1` defaults to it. Do NOT judge layout on a default
+phone AVD — a small screen produces false overflow warnings. Recreation steps + the exact-match
+caveat are in `TESTING.md`.
+
+### ✅ How to test (preference)
+**Validate what changed — do not sweep the whole app every time.**
+* Changed logic (e.g. favorites, queue, collab) → drive that specific flow on the emulator and
+  confirm it works (assert via the run log, backend log, or on-screen state).
+* Changed a tab's layout → open that tab, screenshot it at S25+ resolution, and confirm it
+  looks right. Flutter prints `A RenderFlex overflowed by N pixels` to the run log — scrape it.
+
+---
+
 ## 🏗️ Architecture Overview
 
 Three cooperating layers:
