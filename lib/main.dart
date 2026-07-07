@@ -1701,7 +1701,7 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
             final songFav = provider.isSongFavorited(provider.currentTrack);
             final albumFav = provider.currentAlbum.isNotEmpty && provider.isAlbumFavorited(provider.currentAlbum);
             final artistFav = provider.isArtistFavorited(provider.currentArtist);
-            return Row(
+            return Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 _favIconButton(
@@ -1844,81 +1844,6 @@ class FavoritesSidebar extends StatefulWidget {
 
 class _FavoritesSidebarState extends State<FavoritesSidebar> {
   bool _showQueue = false;
-
-  void _editFavorites() {
-    final provider = Provider.of<DashboardProvider>(context, listen: false);
-    final favs = provider.favorites;
-
-    showDialog(
-      context: context,
-      builder: (context) {
-        final List<TextEditingController> titleControllers = favs.map((f) => TextEditingController(text: f['title'] ?? '')).toList();
-        final List<TextEditingController> urlControllers = favs.map((f) => TextEditingController(text: f['url'] ?? '')).toList();
-        
-        return AlertDialog(
-          backgroundColor: const Color(0xFF151525),
-          title: const Text("Edit Favorites", style: TextStyle(color: Colors.white)),
-          content: SizedBox(
-            width: double.maxFinite,
-            height: 300,
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: titleControllers.length,
-              itemBuilder: (context, i) {
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 12.0),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        flex: 1,
-                        child: TextField(
-                          controller: titleControllers[i],
-                          style: const TextStyle(color: Colors.white, fontSize: 12),
-                          decoration: const InputDecoration(labelText: "Name", labelStyle: TextStyle(color: Colors.white54)),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        flex: 2,
-                        child: TextField(
-                          controller: urlControllers[i],
-                          style: const TextStyle(color: Colors.white, fontSize: 12),
-                          decoration: const InputDecoration(labelText: "Search Query (e.g. My Supermix) or URL", labelStyle: TextStyle(color: Colors.white54)),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("CANCEL"),
-            ),
-            TextButton(
-              onPressed: () {
-                final newFavs = <Map<String, String>>[];
-                for (int i = 0; i < titleControllers.length; i++) {
-                  if (titleControllers[i].text.isNotEmpty || urlControllers[i].text.isNotEmpty) {
-                    newFavs.add({
-                      'title': titleControllers[i].text,
-                      'url': urlControllers[i].text,
-                      'subtitle': i < favs.length ? (favs[i]['subtitle'] ?? 'Search Query') : 'Search Query',
-                    });
-                  }
-                }
-                provider.updateFavorites(newFavs);
-                Navigator.pop(context);
-              },
-              child: const Text("SAVE", style: TextStyle(color: Color(0xFF00E5FF))),
-            ),
-          ],
-        );
-      }
-    );
-  }
 
   void _showReplaceDialog(DashboardProvider provider) {
     final pending = provider.pendingSharedFavorite;
@@ -2175,14 +2100,6 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
                   ),
                 ),
               ),
-              if (!_showQueue)
-                IconButton(
-                  icon: Icon(Icons.edit, size: 16, color: onSurface.withOpacity(0.5)),
-                  onPressed: _editFavorites,
-                  tooltip: 'Edit Favorites',
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
-                ),
             ],
           ),
         ),
