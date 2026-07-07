@@ -44,6 +44,12 @@ class YouTubeService extends ChangeNotifier {
 
   static const String _queuePrefsKey = 'collab_queue';
 
+  // Completes once the persisted queue has been restored (or failed to). Lets
+  // CollabService wait for the queue before reconciling the now-playing highlight
+  // on startup, instead of racing an empty queue.
+  final Completer<void> _queueReady = Completer<void>();
+  Future<void> get queueReady => _queueReady.future;
+
   YouTubeService() {
     _loadQueue();
     _googleSignIn.onCurrentUserChanged.listen((GoogleSignInAccount? account) async {
@@ -74,6 +80,8 @@ class YouTubeService extends ChangeNotifier {
       }
     } catch (e) {
       debugPrint('Failed to load persisted queue: $e');
+    } finally {
+      if (!_queueReady.isCompleted) _queueReady.complete();
     }
   }
 

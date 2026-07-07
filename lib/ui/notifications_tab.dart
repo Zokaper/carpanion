@@ -15,7 +15,8 @@ class _NotificationsTabState extends State<NotificationsTab> {
   static const platform = MethodChannel('com.example.car_dashboard/system');
   List<Map<dynamic, dynamic>> _notifications = [];
   Timer? _timer;
-  
+  String _lastNotifSignature = '';
+
   final Map<String, MemoryImage> _iconCache = {};
   final Set<String> _expandedKeys = {};
   final Set<String> _expandedApps = {};
@@ -39,16 +40,22 @@ class _NotificationsTabState extends State<NotificationsTab> {
       if (result != null && mounted) {
         final notifs = result.cast<Map<dynamic, dynamic>>();
         
-        // Cache icons to prevent flickering
+        // Cache icons to prevent flickering; track current keys for pruning.
+        final currentKeys = <String>{};
         for (final notif in notifs) {
           final key = notif['key']?.toString();
-          if (key != null && !_iconCache.containsKey(key)) {
-            final iconBytes = notif['icon'] as Uint8List?;
-            if (iconBytes != null) {
-              _iconCache[key] = MemoryImage(iconBytes);
+          if (key != null) {
+            currentKeys.add(key);
+            if (!_iconCache.containsKey(key)) {
+              final iconBytes = notif['icon'] as Uint8List?;
+              if (iconBytes != null) {
+                _iconCache[key] = MemoryImage(iconBytes);
+              }
             }
           }
         }
+        // Drop cached icons for notifications that are no longer present.
+        _iconCache.removeWhere((k, _) => !currentKeys.contains(k));
 
         if (_trackedChatId != null) {
           final newMessages = List<Map<String, String>>.from(_trackedMessagesNotifier.value);
@@ -88,9 +95,17 @@ class _NotificationsTabState extends State<NotificationsTab> {
           }
         }
 
-        setState(() {
-          _notifications = notifs;
-        });
+        // Only rebuild the (grouped) list when the visible set actually changed,
+        // instead of every 3s tick.
+        final signature = notifs
+            .map((n) => '${n['key']}:${n['postTime']}:${n['title']}:${n['text']}')
+            .join('|');
+        if (signature != _lastNotifSignature) {
+          _lastNotifSignature = signature;
+          setState(() {
+            _notifications = notifs;
+          });
+        }
       }
     } catch (e) {
       debugPrint("Failed to fetch notifications: $e");
@@ -100,6 +115,7 @@ class _NotificationsTabState extends State<NotificationsTab> {
   @override
   void dispose() {
     _timer?.cancel();
+    _trackedMessagesNotifier.dispose();
     super.dispose();
   }
 
@@ -263,7 +279,7 @@ class _NotificationsTabState extends State<NotificationsTab> {
       key: ValueKey(key),
       direction: DismissDirection.endToStart,
       onDismissed: (direction) {
-        platform.invokeMethod('clearNotification', {'key': key});
+        platform.invokeMethod('clearNotification', {'key': key}).catchError((e) => debugPrint("clearNotification failed: $e"));
         setState(() {
           _notifications.removeWhere((n) => n['key'] == key);
           _expandedKeys.remove(key);
@@ -288,7 +304,7 @@ class _NotificationsTabState extends State<NotificationsTab> {
            }
         },
         onDoubleTap: () {
-           platform.invokeMethod('openNotification', {'key': key});
+           platform.invokeMethod('openNotification', {'key': key}).catchError((e) => debugPrint("openNotification failed: $e"));
         },
         child: Container(
           margin: const EdgeInsets.only(bottom: 6.0),
@@ -393,7 +409,7 @@ class _NotificationsTabState extends State<NotificationsTab> {
             for (final n in notifs) {
               final k = n['key']?.toString();
               if (k != null) {
-                platform.invokeMethod('clearNotification', {'key': k});
+                platform.invokeMethod('clearNotification', {'key': k}).catchError((e) => debugPrint("clearNotification failed: $e"));
               }
             }
             setState(() {

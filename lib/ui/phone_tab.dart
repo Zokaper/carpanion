@@ -20,6 +20,7 @@ class _PhoneTabState extends State<PhoneTab> {
   List<Contact> _favorites = _cachedFavorites;
   List<CallLogEntry> _recents = _cachedRecents;
   bool _isLoading = !_hasLoaded;
+  bool _fetchScheduled = false;
 
   @override
   void initState() {
@@ -77,11 +78,15 @@ class _PhoneTabState extends State<PhoneTab> {
 
   @override
   Widget build(BuildContext context) {
-    final provider = Provider.of<DashboardProvider>(context);
+    // Only rebuild when phone-permission state flips — NOT on every provider
+    // notification (e.g. the per-second call-duration tick), which this tab
+    // doesn't render.
+    final hasPhonePermissions = context.select<DashboardProvider, bool>((p) => p.hasPhonePermissions);
+    final provider = Provider.of<DashboardProvider>(context, listen: false);
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
 
-    if (!provider.hasPhonePermissions) {
+    if (!hasPhonePermissions) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24.0),
@@ -115,8 +120,12 @@ class _PhoneTabState extends State<PhoneTab> {
 
     // Removing call screen override so the tab just displays recents/favorites.
 
-    if (!_hasLoaded && !_isLoading) {
+    if (!_hasLoaded && !_isLoading && !_fetchScheduled) {
+      // Guard so repeated builds before _isLoading flips don't schedule multiple
+      // concurrent contact/call-log fetches.
+      _fetchScheduled = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
         setState(() {
           _isLoading = true;
         });

@@ -205,6 +205,7 @@ class DashboardProvider with ChangeNotifier {
       final success = await platform.invokeMethod<bool>('setRingerMode', {'mode': newMode});
       if (success == true) {
         _ringerMode = newMode;
+        _lastSystemControlWrite = DateTime.now();
         notifyListeners();
       }
     } catch (e) {
@@ -218,8 +219,17 @@ class DashboardProvider with ChangeNotifier {
   int get brightness => _brightness;
   bool get isAdaptiveBrightness => _isAdaptiveBrightness;
 
+  // When the user just changed brightness/ringer, suppress the 3s poll from
+  // overwriting those fields with a stale native read (which would visibly snap
+  // the slider/toggle back).
+  DateTime? _lastSystemControlWrite;
+  bool get _systemControlRecentlySet =>
+      _lastSystemControlWrite != null &&
+      DateTime.now().difference(_lastSystemControlWrite!) < const Duration(seconds: 4);
+
   Future<void> setBrightness(int value) async {
     _brightness = value;
+    _lastSystemControlWrite = DateTime.now();
     notifyListeners();
     try {
       await platform.invokeMethod('setSystemBrightness', {'brightness': value});
@@ -230,6 +240,7 @@ class DashboardProvider with ChangeNotifier {
 
   Future<void> toggleAdaptiveBrightness() async {
     _isAdaptiveBrightness = !_isAdaptiveBrightness;
+    _lastSystemControlWrite = DateTime.now();
     notifyListeners();
     try {
       await platform.invokeMethod('setSystemBrightness', {'adaptive': _isAdaptiveBrightness});
@@ -404,10 +415,14 @@ class DashboardProvider with ChangeNotifier {
       _isMuted = false;
     } else {
       _callNumber = number;
-      
+
       // Resolve caller contact name if we haven't already
       if (_callNumber.isNotEmpty && (_callName.isEmpty || _callName == 'Unknown Caller')) {
-        _callName = await _resolveContactName(_callNumber);
+        final resolved = await _resolveContactName(_callNumber);
+        // A newer call-state event (e.g. the call ended) may have run fully during
+        // the await above — don't clobber it with this now-stale resolution.
+        if (_callState != stateStr || _callNumber != number) return;
+        _callName = resolved;
       } else if (_callNumber.isEmpty) {
         _callName = 'Unknown Caller';
       }
@@ -553,11 +568,16 @@ class DashboardProvider with ChangeNotifier {
         _heading = position.heading;
         notifyListeners();
         
-        if (_lastSpeedLimitPosition == null || 
+        if (_lastSpeedLimitPosition == null ||
             Geolocator.distanceBetween(_lastSpeedLimitPosition!.latitude, _lastSpeedLimitPosition!.longitude, position.latitude, position.longitude) > 200) {
-            _lastSpeedLimitPosition = position;
-            _fetchSpeedLimit(position);
-            _fetchStreetName(position);
+            // Only advance the anchor once we actually kick off a fetch; if one is
+            // already in flight, leave the anchor so the next position retries
+            // instead of being silently skipped for another 200 m.
+            if (!_isFetchingSpeedLimit) {
+              _lastSpeedLimitPosition = position;
+              _fetchSpeedLimit(position);
+              _fetchStreetName(position);
+            }
         }
       }
     });
@@ -600,10 +620,13 @@ class DashboardProvider with ChangeNotifier {
     _networkTimer?.cancel();
     _networkTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
       if (_isDemoMode) {
-        _isWifi = true;
-        _wifiBars = 4;
-        _isCellular = true;
-        _cellularBars = 4;
+        if (!_isWifi || _wifiBars != 4 || !_isCellular || _cellularBars != 4) {
+          _isWifi = true;
+          _wifiBars = 4;
+          _isCellular = true;
+          _cellularBars = 4;
+          notifyListeners();
+        }
         return;
       }
       if (_isFetchingNetwork) return;
@@ -625,20 +648,24 @@ class DashboardProvider with ChangeNotifier {
             changed = true;
           }
 
-          final int? rMode = await platform.invokeMethod<int>('getRingerMode');
-          if (rMode != null && rMode != _ringerMode) {
-            _ringerMode = rMode;
-            changed = true;
-          }
-
-          final Map<dynamic, dynamic>? bInfo = await platform.invokeMethod('getBrightnessInfo');
-          if (bInfo != null) {
-            final int b = bInfo['brightness'] as int? ?? 128;
-            final bool a = bInfo['adaptive'] as bool? ?? true;
-            if (_brightness != b || _isAdaptiveBrightness != a) {
-              _brightness = b;
-              _isAdaptiveBrightness = a;
+          // Skip overwriting ringer/brightness right after the user set them, so
+          // a stale native read doesn't snap the control back.
+          if (!_systemControlRecentlySet) {
+            final int? rMode = await platform.invokeMethod<int>('getRingerMode');
+            if (rMode != null && rMode != _ringerMode) {
+              _ringerMode = rMode;
               changed = true;
+            }
+
+            final Map<dynamic, dynamic>? bInfo = await platform.invokeMethod('getBrightnessInfo');
+            if (bInfo != null) {
+              final int b = bInfo['brightness'] as int? ?? 128;
+              final bool a = bInfo['adaptive'] as bool? ?? true;
+              if (_brightness != b || _isAdaptiveBrightness != a) {
+                _brightness = b;
+                _isAdaptiveBrightness = a;
+                changed = true;
+              }
             }
           }
 
@@ -762,21 +789,29 @@ class DashboardProvider with ChangeNotifier {
     }
   }
 
+  bool _isFetchingMedia = false;
+
   void _startMediaPolling() {
+    _mediaTimer?.cancel();
     _mediaTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
       if (_isDemoMode) return;
+      // A tick can outlast its 1s interval (album-art fetch); don't let the next
+      // tick run concurrently and clobber the now-playing state.
+      if (_isFetchingMedia) return;
+      _isFetchingMedia = true;
+      bool changed = false;
       try {
         final dynamic mediaInfo = await FlutterMediaController.getCurrentMediaInfo();
         if (mediaInfo != null) {
            final title = mediaInfo.track?.toString() ?? '';
            final artist = mediaInfo.artist?.toString() ?? '';
            final isCurrentlyPlaying = mediaInfo.isPlaying == true;
-           
+
            if (_waitingForMusicToReturn && isCurrentlyPlaying) {
               _waitingForMusicToReturn = false;
               _triggerReturn();
            }
-           
+
            if (title != _currentTrack || artist != _currentArtist || _isPlaying != isCurrentlyPlaying) {
               if (title.isNotEmpty) _currentTrack = title;
               if (artist.isNotEmpty) _currentArtist = artist;
@@ -790,11 +825,8 @@ class DashboardProvider with ChangeNotifier {
                 }
               } catch (_) {}
 
-              if (!_isPlaying && isCurrentlyPlaying) {
-                 // Music started playing
-              }
               _isPlaying = isCurrentlyPlaying;
-              notifyListeners();
+              changed = true;
 
               if (title.isNotEmpty && title != 'Not Playing') {
                  await _fetchNativeAlbumArt();
@@ -803,23 +835,42 @@ class DashboardProvider with ChangeNotifier {
               }
            }
         }
-        
+
         // Poll exact media progress from Native
         final Map<dynamic, dynamic>? progress = await platform.invokeMethod('getMediaProgress');
         if (progress != null) {
-           _mediaPosition = (progress['position'] as int).toDouble();
-           _mediaDuration = (progress['duration'] as int).toDouble();
-           if (_mediaDuration <= 0) _mediaDuration = 1.0; // Prevent divide by zero
-           notifyListeners();
+           final pos = (progress['position'] as num?)?.toDouble() ?? _mediaPosition;
+           double dur = (progress['duration'] as num?)?.toDouble() ?? _mediaDuration;
+           if (dur <= 0) dur = 1.0; // Prevent divide by zero
+           if (pos != _mediaPosition || dur != _mediaDuration) {
+              _mediaPosition = pos;
+              _mediaDuration = dur;
+              changed = true;
+           }
         }
+
+        if (changed) notifyListeners();
       } catch (e) {
-        // Ignored
+        debugPrint("Media polling error: $e");
+      } finally {
+        _isFetchingMedia = false;
       }
     });
   }
 
+  bool _disposed = false;
+
+  @override
+  void notifyListeners() {
+    // Async callbacks that resolve after this provider is disposed must not
+    // touch listeners (would throw "used after being disposed").
+    if (_disposed) return;
+    super.notifyListeners();
+  }
+
   @override
   void dispose() {
+    _disposed = true;
     _mediaTimer?.cancel();
     _dashcamTimer?.cancel();
     _networkTimer?.cancel();
@@ -827,6 +878,7 @@ class DashboardProvider with ChangeNotifier {
     _positionStreamSubscription?.cancel();
     _demoTimer?.cancel();
     _shareSubscription?.cancel();
+    platform.setMethodCallHandler(null);
     super.dispose();
   }
 

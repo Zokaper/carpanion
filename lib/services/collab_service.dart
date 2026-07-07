@@ -46,6 +46,10 @@ class CollabService extends ChangeNotifier {
   String _lastTrack = '';
   bool _lastPlaying = false;
 
+  // True while an Auto-DJ advance is in flight (target track still loading in YT
+  // Music), to prevent double-advancing past queue entries.
+  bool _advancing = false;
+
   bool _initialized = false;
 
   CollabService(this._dashboard, this._yt) {
@@ -80,6 +84,11 @@ class CollabService extends ChangeNotifier {
     _initialized = true;
     _lastTrack = _dashboard.currentTrack;
     _lastPlaying = _dashboard.isPlaying;
+
+    // Wait for the persisted queue to finish restoring before reconciling, else
+    // we match the now-playing title against an empty queue and lose the highlight
+    // / Auto-DJ resume on a restart-mid-song.
+    await _yt.queueReady;
 
     // Silent restore: we set _currentPlayingIndex from disk but do NOT replay it.
     // YT Music is likely still playing the song; if it matches a queue item,
@@ -261,16 +270,23 @@ class CollabService extends ChangeNotifier {
     // independent of the sharing flag.
     final index = _matchQueueIndex(_lastTrack);
     if (index != -1) {
+      // Our advance target loaded — safe to advance again on the next song-end.
+      _advancing = false;
       // Keep the highlight synced with whatever queue track is playing.
       if (_currentPlayingIndex != index) {
         _currentPlayingIndex = index;
         _persist();
       }
-    } else if (_playbackActive && _currentPlayingIndex != -1) {
+    } else if (_playbackActive && _currentPlayingIndex != -1 && !_advancing) {
       // The queue track we were playing ended (YT Music moved to autoplay).
       if (_yt.currentQueue.length > _currentPlayingIndex + 1) {
         _currentPlayingIndex++;
         debugPrint("Collab Auto-DJ: advancing to index $_currentPlayingIndex");
+        // Guard against advancing again while YT Music is still loading this
+        // target (autoplay can flash several non-matching tracks first, which
+        // would otherwise skip queue entries). Self-heals if the target never loads.
+        _advancing = true;
+        Future.delayed(const Duration(seconds: 10), () => _advancing = false);
         playAt(_currentPlayingIndex);
       } else {
         // Reached the end of the queue.

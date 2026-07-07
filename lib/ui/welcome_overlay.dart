@@ -31,6 +31,7 @@ class _WelcomeOverlayWidgetState extends State<WelcomeOverlayWidget> {
 
   Future<void> _loadPreferences() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
     setState(() {
       _startDashcamDefault = prefs.getBool('startDashcamWelcomeDefault') ?? false;
       _startDashcam = prefs.getBool('startDashcamWelcome') ?? false;
@@ -81,9 +82,12 @@ class _WelcomeOverlayWidgetState extends State<WelcomeOverlayWidget> {
 
     if (launchedMaps) {
       int attempts = 0;
-      // Wait up to 60 seconds (120 * 500ms) for the user to select a route and start navigation
-      while (attempts < 120) {
+      // Wait up to ~12s (24 * 500ms) for the user to start navigation, then bring
+      // the app back. Capped low so music + overlay dismissal aren't held hostage
+      // if the user never starts a route. Bail immediately if the overlay is gone.
+      while (attempts < 24) {
         await Future.delayed(const Duration(milliseconds: 500));
+        if (!mounted) return;
         try {
           final isNavigating = await platform.invokeMethod<bool>('isNavigating');
           if (isNavigating == true) {
@@ -96,6 +100,7 @@ class _WelcomeOverlayWidgetState extends State<WelcomeOverlayWidget> {
         }
         attempts++;
       }
+      if (!mounted) return;
 
       try {
         await platform.invokeMethod('bringToFront');
@@ -106,7 +111,7 @@ class _WelcomeOverlayWidgetState extends State<WelcomeOverlayWidget> {
     }
 
     if (_stagedMediaUrl.isNotEmpty) {
-      await _launchMedia(context, _stagedMediaUrl);
+      await _launchMedia(provider, _stagedMediaUrl);
     }
 
     provider.dismissWelcomeUI();
@@ -136,10 +141,11 @@ class _WelcomeOverlayWidgetState extends State<WelcomeOverlayWidget> {
     }
   }
 
-  Future<void> _launchMedia(BuildContext context, String queryOrUrl) async {
+  // Takes the provider directly (not context) so it is safe to call after the
+  // long maps/nav awaits, when this widget's context may already be defunct.
+  Future<void> _launchMedia(DashboardProvider provider, String queryOrUrl) async {
     if (queryOrUrl.isEmpty) return;
-    final provider = Provider.of<DashboardProvider>(context, listen: false);
-    
+
     final isUrl = queryOrUrl.startsWith('http');
     
     // Warm-up
