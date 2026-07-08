@@ -453,7 +453,7 @@ class CollabService extends ChangeNotifier {
     notifyListeners();
 
     final item = _yt.currentQueue[index];
-    final videoId = item['videoId'];
+    final videoId = item['videoId']?.toString();
     final query = '${item['title']} ${item['artist']}';
 
     DashboardProvider.platform.invokeMethod('playFromMediaSession', {
@@ -465,20 +465,32 @@ class CollabService extends ChangeNotifier {
         debugPrint("Collab: playing via MediaSession (${result['method']}): $query");
       } else {
         debugPrint("Collab: MediaSession failed, falling back to intent");
-        _playViaIntent(query);
+        _playViaIntent(query, videoId: videoId);
       }
     }).catchError((e) {
       debugPrint("Collab: MediaSession error: $e, falling back to intent");
-      _playViaIntent(query);
+      _playViaIntent(query, videoId: videoId);
     });
   }
 
-  void _playViaIntent(String query) {
-    final intent = AndroidIntent(
-      action: 'android.media.action.MEDIA_PLAY_FROM_SEARCH',
-      arguments: <String, dynamic>{'query': query},
-      package: 'com.google.android.apps.youtube.music',
-    );
+  void _playViaIntent(String query, {String? videoId}) {
+    // Prefer the EXACT track by its watch URL. A search intent (the old fallback)
+    // resolves to whatever YT Music ranks first — often the wrong song or a video
+    // version — which is why a cold-start album could open on the wrong track.
+    final AndroidIntent intent;
+    if (videoId != null && videoId.isNotEmpty) {
+      intent = AndroidIntent(
+        action: 'android.intent.action.VIEW',
+        data: 'https://music.youtube.com/watch?v=$videoId',
+        package: 'com.google.android.apps.youtube.music',
+      );
+    } else {
+      intent = AndroidIntent(
+        action: 'android.media.action.MEDIA_PLAY_FROM_SEARCH',
+        arguments: <String, dynamic>{'query': query},
+        package: 'com.google.android.apps.youtube.music',
+      );
+    }
     intent.launch().catchError((e) {
       debugPrint("Collab: could not launch targeted YT Music intent: $e");
     });

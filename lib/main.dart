@@ -1890,10 +1890,12 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
                 icon: Icons.skip_previous_rounded,
                 size: 26,
                 onPressed: () {
-                  _handleMediaAction('previous');
+                  // Queue-aware: steps back through OUR queue when one is playing,
+                  // else falls through to YT Music's native previous.
+                  context.read<CollabService>().previous();
                 },
               ),
-              
+
               _buildPlayPauseButton(
                 isPlaying: isPlaying,
                 onPressed: () {
@@ -1901,12 +1903,14 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
                   _handleMediaAction('playPause');
                 },
               ),
-              
+
               _buildControlButton(
                 icon: Icons.skip_next_rounded,
                 size: 26,
                 onPressed: () {
-                  _handleMediaAction('next');
+                  // Queue-aware: advances OUR queue when one is playing, else falls
+                  // through to YT Music's native next (autoplay takeover at the end).
+                  context.read<CollabService>().next();
                 },
               ),
             ],
