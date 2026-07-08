@@ -302,11 +302,17 @@ button on the QR screen (the only full reset).
 ## 🚧 Known risks & next steps
 - **Album/artist Innertube parsing** needs on-device validation against real responses
   (see the warning above). Falls back to YT Music launch on failure.
-- **Supermix / dynamic personal playlists**: deferred. Our OAuth token drives the Data API
-  (which doesn't expose YT Music mixes); Innertube auth would need a separate TV/limited-
-  input device flow (how `ytmusicapi` does it). For now they're `playlist` favorites that
-  launch YT Music. A future spike: try OAuth-bearer Innertube with an `ANDROID_MUSIC`/`TV`
-  client to fetch mixes natively.
+- **Supermix / dynamic personal playlists**: deferred, but the path is decided. Personalized
+  mixes need *authenticated* YT Music Innertube (the anonymous WEB_REMIX client has no user
+  identity), and the favorite only stores the label `"My Supermix"` (no real playlist id). For
+  now `playlist` favorites just launch YT Music. **Planned approach (how SimpMusic/ViMusic/
+  InnerTune do it):** a cookie/WebView YT-Music login (in-app browser → capture the
+  `__Secure-3PAPISID` cookie) → add a `SAPISIDHASH` `Authorization` header (+ Cookie) to the
+  existing `_innertubePost` (same WEB_REMIX client) → browse `FEmusic_home` for the Supermix
+  card + its playlist id → expand via the existing `next` path into `loadQueueAndPlay`. This is
+  cleaner than the `ytmusicapi` OAuth-device flow (no borrowed TV client id/secret) and also
+  unlocks liked songs / playlists / personalized home. ~a day + on-device parse validation;
+  its own task after V3.5.
 - **Playing highlight** uses fuzzy title-matching (native track title vs stored queue
   title) — unusual titles can occasionally mis-highlight.
 - Passenger edit/media **permissions reset to off on app restart** (safe default; not persisted).

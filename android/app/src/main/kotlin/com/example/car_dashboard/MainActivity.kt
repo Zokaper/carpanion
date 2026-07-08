@@ -568,6 +568,30 @@ class MainActivity : FlutterActivity() {
                         ))
                     }
                 }
+                "seekTo" -> {
+                    try {
+                        val positionMs = (call.argument<Number>("position"))?.toLong()
+                        if (positionMs == null) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        val mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+                        val componentName = ComponentName(this@MainActivity, DashcamListenerService::class.java)
+                        val controllers = mediaSessionManager.getActiveSessions(componentName)
+                        val ytController = controllers.firstOrNull {
+                            it.packageName == "com.google.android.apps.youtube.music"
+                        } ?: controllers.firstOrNull()
+                        if (ytController != null) {
+                            ytController.transportControls.seekTo(positionMs)
+                            result.success(true)
+                        } else {
+                            result.success(false)
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("Carpanion", "seekTo error: ${e.message}")
+                        result.success(false)
+                    }
+                }
                 else -> {
                     result.notImplemented()
                 }

@@ -95,23 +95,33 @@ class _QueueTabState extends State<QueueTab> {
           tooltip: collabOn ? 'Collab on — passenger sharing open' : 'Collab off',
           onTap: () => collabOn ? collab.disable() : collab.enable(),
         ),
-        _iconBtn(
-          icon: Icons.qr_code,
-          color: _showQrCodeOverlay ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
-          tooltip: 'Show QR Code',
-          onTap: () => setState(() => _showQrCodeOverlay = !_showQrCodeOverlay),
-        ),
-        _iconBtn(
-          icon: collab.allowEditing ? Icons.edit : Icons.edit_off,
-          color: collab.allowEditing ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
-          tooltip: 'Allow Passenger Editing',
-          onTap: () => collab.setAllowEditing(!collab.allowEditing),
-        ),
-        _iconBtn(
-          icon: collab.allowMediaControl ? Icons.play_circle_outline : Icons.not_interested,
-          color: collab.allowMediaControl ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
-          tooltip: 'Allow Media Control',
-          onTap: () => collab.setAllowMediaControl(!collab.allowMediaControl),
+        // Sharing/permission controls — greyed (but still tappable, so they can be
+        // pre-configured) when Collab is off, since they only matter once sharing is open.
+        Opacity(
+          opacity: collabOn ? 1.0 : 0.4,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _iconBtn(
+                icon: Icons.qr_code,
+                color: _showQrCodeOverlay ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
+                tooltip: 'Show QR Code',
+                onTap: () => setState(() => _showQrCodeOverlay = !_showQrCodeOverlay),
+              ),
+              _iconBtn(
+                icon: collab.allowEditing ? Icons.edit : Icons.edit_off,
+                color: collab.allowEditing ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
+                tooltip: 'Allow Passenger Editing',
+                onTap: () => collab.setAllowEditing(!collab.allowEditing),
+              ),
+              _iconBtn(
+                icon: collab.allowMediaControl ? Icons.play_circle_outline : Icons.not_interested,
+                color: collab.allowMediaControl ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
+                tooltip: 'Allow Media Control',
+                onTap: () => collab.setAllowMediaControl(!collab.allowMediaControl),
+              ),
+            ],
+          ),
         ),
         if (ytService.currentQueue.isNotEmpty)
           _iconBtn(

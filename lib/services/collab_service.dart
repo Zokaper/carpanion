@@ -45,6 +45,10 @@ class CollabService extends ChangeNotifier {
   // Tracked to detect changes coming from DashboardProvider notifications.
   String _lastTrack = '';
   bool _lastPlaying = false;
+  // Previous poll's position/duration (ms), used to tell a natural song-end from
+  // the user playing something unrelated in YT Music.
+  double _lastPosMs = 0;
+  double _lastDurMs = 0;
 
   // True while an Auto-DJ advance is in flight (target track still loading in YT
   // Music), to prevent double-advancing past queue entries.
@@ -65,6 +69,11 @@ class CollabService extends ChangeNotifier {
   String get sessionId => _sessionId;
   bool get enabled => _enabled;
   int get currentPlayingIndex => _currentPlayingIndex;
+
+  /// True while OUR queue is actively driving playback (favorites or collab), so
+  /// the UI can show a "playing from queue" indicator. False once the queue ends
+  /// or the user plays something unrelated in YT Music.
+  bool get playbackActive => _playbackActive;
 
   /// The album/track cover for the CURRENTLY PLAYING queue item — but only when
   /// the native now-playing track actually matches it. Lets the now-playing panel
@@ -290,6 +299,13 @@ class CollabService extends ChangeNotifier {
     // unchanged-track early-return below.
     _scheduleEndAdvance();
 
+    // Snapshot the PREVIOUS tick's position before overwriting — used below to
+    // tell a natural song-end from an unrelated track the user started.
+    final prevPosMs = _lastPosMs;
+    final prevDurMs = _lastDurMs;
+    _lastPosMs = _dashboard.mediaPosition;
+    _lastDurMs = _dashboard.mediaDuration;
+
     if (_dashboard.currentTrack == _lastTrack) return;
     _lastTrack = _dashboard.currentTrack;
     _socket?.emit('update_playing_status', _lastTrack);
@@ -306,15 +322,19 @@ class CollabService extends ChangeNotifier {
         _persist();
       }
     } else if (_playbackActive && _currentPlayingIndex != -1 && !_advancing) {
-      // The queue track we were playing ended (YT Music moved to autoplay).
-      if (_yt.currentQueue.length > _currentPlayingIndex + 1) {
+      // A non-queue track appeared. Only treat it as a song-end (and advance) if
+      // the previous track was actually near its end; otherwise the user started
+      // something else in YT Music — stop driving the queue instead of hijacking it.
+      final wasNearEnd = prevDurMs > 0 && prevPosMs >= prevDurMs - 12000;
+      if (wasNearEnd && _yt.currentQueue.length > _currentPlayingIndex + 1) {
         _currentPlayingIndex++;
         debugPrint("Collab Auto-DJ: advancing to index $_currentPlayingIndex");
         // playAt() re-arms the _advancing guard while YT Music loads the target,
         // so autoplay flashing several non-matching tracks can't skip entries.
         playAt(_currentPlayingIndex);
       } else {
-        // Reached the end of the queue.
+        // End of queue, or an external/mid-track change — deactivate so we don't
+        // hijack playback, and clear the now-stale highlight.
         _currentPlayingIndex = -1;
         _playbackActive = false;
         _persist();

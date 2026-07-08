@@ -468,6 +468,18 @@ class DashboardProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  /// Seeks YT Music's MediaSession to [ms] (milliseconds). Optimistically updates
+  /// the local position so the progress bar doesn't jump back before the next poll.
+  Future<void> seekTo(int ms) async {
+    _mediaPosition = ms.toDouble();
+    notifyListeners();
+    try {
+      await platform.invokeMethod('seekTo', {'position': ms});
+    } catch (e) {
+      debugPrint("Seek failed: $e");
+    }
+  }
+
   Future<void> requestMediaPermissions() async {
     try {
       await FlutterMediaController.requestPermissions();
@@ -1694,6 +1706,9 @@ class MediaControlPanel extends StatefulWidget {
 
 class _MediaControlPanelState extends State<MediaControlPanel> {
   bool _isAlbumArtHidden = false;
+  // While the user drags the progress bar, hold the drag position (ms) so the
+  // thumb follows the finger and the 1s poller doesn't yank it back.
+  double? _dragSeekMs;
 
   // Removed fake progress controller
 
@@ -1831,7 +1846,37 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
           ),
           
           const SizedBox(height: 12),
-          
+
+          // "Playing from queue" badge — makes it obvious when OUR queue is driving
+          // playback (vs YT Music playing on its own).
+          if (context.watch<CollabService>().playbackActive)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6.0),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.queue_music, size: 12, color: theme.colorScheme.primary),
+                    const SizedBox(width: 5),
+                    Text(
+                      "QUEUE",
+                      style: TextStyle(
+                        color: theme.colorScheme.primary,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.0,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
           // Track Info
           AutoScrollText(
              text: provider.currentTrack,
@@ -1869,10 +1914,16 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
                     overlayShape: const RoundSliderOverlayShape(overlayRadius: 12.0),
                   ),
                   child: Slider(
-                    value: provider.mediaPosition.clamp(0.0, provider.mediaDuration),
+                    value: (_dragSeekMs ?? provider.mediaPosition).clamp(0.0, provider.mediaDuration),
                     min: 0.0,
                     max: provider.mediaDuration,
-                    onChanged: (value) {},
+                    // Track the finger while dragging (poller doesn't fight it),
+                    // commit the seek on release.
+                    onChanged: (value) => setState(() => _dragSeekMs = value),
+                    onChangeEnd: (value) {
+                      provider.seekTo(value.toInt());
+                      setState(() => _dragSeekMs = null);
+                    },
                   ),
                 ),
               ),
@@ -1882,7 +1933,7 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      _formatDuration(provider.mediaPosition),
+                      _formatDuration(_dragSeekMs ?? provider.mediaPosition),
                       style: TextStyle(fontSize: 10, color: onSurface.withOpacity(0.6)),
                     ),
                     Text(
