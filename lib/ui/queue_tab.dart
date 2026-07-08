@@ -7,7 +7,7 @@ import '../services/collab_service.dart';
 /// Fixed height of every queue row. A fixed `itemExtent` makes the
 /// scroll-to-now-playing math exact (index * extent), which the old variable-row
 /// estimate got wrong (landing the row at the bottom instead of centered).
-const double _kQueueRowExtent = 64.0;
+const double _kQueueRowExtent = 68.0;
 
 /// Thin view over [CollabService]. All collab state (socket, playback, session,
 /// auto-DJ) lives in the service so it survives this widget being disposed when
@@ -243,64 +243,73 @@ class _QueueTabState extends State<QueueTab> {
               final item = ytService.currentQueue[index];
               final isPlaying = index == playingIndex;
 
+              // Custom Row (not ListTile) so the cover stays a fixed square and the
+              // title/artist get the full remaining width.
               return Padding(
                 padding: const EdgeInsets.only(bottom: 6.0),
-                child: Container(
-                  decoration: isPlaying
-                      ? BoxDecoration(
-                          color: theme.colorScheme.primary.withOpacity(0.15),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border(left: BorderSide(color: theme.colorScheme.primary, width: 4)),
-                        )
-                      : null,
-                  // Left inset only when playing (for the border) — no vertical
-                  // padding, so every row fits the fixed _kQueueRowExtent.
-                  padding: isPlaying ? const EdgeInsets.only(left: 8.0) : EdgeInsets.zero,
-                  // Transparent Material so the tile's tap-ink has a surface to
-                  // paint on above the colored Container (silences the "ListTile
-                  // background color or ink splashes may be invisible" warning).
-                  child: Material(
-                    type: MaterialType.transparency,
-                    child: ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
-                    visualDensity: VisualDensity.compact,
-                    minVerticalPadding: 0,
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
                     onTap: () => collab.playAt(index),
-                    leading: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.network(
-                        item['thumbnail'] ?? '',
-                        width: 48,
-                        height: 48,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Container(
-                          width: 48,
-                          height: 48,
-                          color: Colors.grey.withOpacity(0.2),
-                          child: const Icon(Icons.music_note),
-                        ),
+                    child: Container(
+                      decoration: isPlaying
+                          ? BoxDecoration(
+                              color: theme.colorScheme.primary.withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border(left: BorderSide(color: theme.colorScheme.primary, width: 4)),
+                            )
+                          : null,
+                      padding: EdgeInsets.only(left: isPlaying ? 8.0 : 4.0, right: 6.0),
+                      child: Row(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Image.network(
+                              item['thumbnail'] ?? '',
+                              width: 50,
+                              height: 50,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => Container(
+                                width: 50,
+                                height: 50,
+                                color: Colors.grey.withOpacity(0.2),
+                                child: const Icon(Icons.music_note),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  item['title'] ?? 'Unknown',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold,
+                                    color: isPlaying ? theme.colorScheme.primary : onSurface,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  item['artist'] ?? 'Unknown Artist',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(fontSize: 13, color: onSurface.withOpacity(0.5)),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          isPlaying
+                              ? Icon(Icons.equalizer, color: theme.colorScheme.primary, size: 20)
+                              : Icon(Icons.play_arrow, color: onSurface.withOpacity(0.3), size: 20),
+                        ],
                       ),
-                    ),
-                    title: Text(
-                      item['title'] ?? 'Unknown',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                        color: isPlaying ? theme.colorScheme.primary : onSurface,
-                      ),
-                    ),
-                    subtitle: Text(
-                      item['artist'] ?? 'Unknown Artist',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 13, color: onSurface.withOpacity(0.5)),
-                    ),
-                    trailing: isPlaying
-                        ? Icon(Icons.equalizer, color: theme.colorScheme.primary, size: 20)
-                        : Icon(Icons.play_arrow, color: onSurface.withOpacity(0.3), size: 20),
                     ),
                   ),
                 ),

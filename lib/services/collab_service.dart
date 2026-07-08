@@ -50,6 +50,11 @@ class CollabService extends ChangeNotifier {
   // Music), to prevent double-advancing past queue entries.
   bool _advancing = false;
 
+  // One-shot timer that advances to the next queue item just before the current
+  // track ends (rescheduled on each media poll from duration−position), so YT
+  // Music never gets to autoplay its own next-up.
+  Timer? _endAdvanceTimer;
+
   bool _initialized = false;
 
   CollabService(this._dashboard, this._yt) {
@@ -60,6 +65,25 @@ class CollabService extends ChangeNotifier {
   String get sessionId => _sessionId;
   bool get enabled => _enabled;
   int get currentPlayingIndex => _currentPlayingIndex;
+
+  /// The album/track cover for the CURRENTLY PLAYING queue item — but only when
+  /// the native now-playing track actually matches it. Lets the now-playing panel
+  /// show OUR cover (e.g. the album cover) instead of YT Music's native art, which
+  /// for an audio-swapped single reports the single's cover, not the album's.
+  String? get currentTrackArt {
+    if (!_playbackActive || _currentPlayingIndex < 0 || _currentPlayingIndex >= _yt.currentQueue.length) {
+      return null;
+    }
+    final item = _yt.currentQueue[_currentPlayingIndex];
+    final qTitle = (item['title'] ?? '').toString().toLowerCase();
+    final native = _dashboard.currentTrack.toLowerCase();
+    if (qTitle.isEmpty || native.isEmpty) return null;
+    final matches = qTitle == native || qTitle.contains(native) || native.contains(qTitle);
+    if (!matches) return null; // don't paint our cover over an unrelated track
+    final thumb = (item['thumbnail'] ?? '').toString();
+    return thumb.isNotEmpty ? thumb : null;
+  }
+
   bool get allowEditing => _allowEditing;
   bool get allowMediaControl => _allowMediaControl;
   bool get isConnected => _socket?.connected == true;
@@ -262,6 +286,10 @@ class CollabService extends ChangeNotifier {
       _socket?.emit('update_play_state', _lastPlaying);
     }
 
+    // Runs on every tick (incl. position-only updates) — must be before the
+    // unchanged-track early-return below.
+    _scheduleEndAdvance();
+
     if (_dashboard.currentTrack == _lastTrack) return;
     _lastTrack = _dashboard.currentTrack;
     _socket?.emit('update_playing_status', _lastTrack);
@@ -293,6 +321,32 @@ class CollabService extends ChangeNotifier {
       }
     }
     notifyListeners();
+  }
+
+  /// (Re)schedule a precise one-shot advance to fire just before the current
+  /// queue track ends — polling for "near the end" misses the window (YT Music
+  /// autoplays its next-up between our ~1s polls), so we compute the exact time
+  /// remaining and schedule a timer, cancelling/rescheduling on each poll.
+  void _scheduleEndAdvance() {
+    _endAdvanceTimer?.cancel();
+    if (!_playbackActive || _advancing || !_dashboard.isPlaying) return;
+    if (_currentPlayingIndex < 0 || _currentPlayingIndex + 1 >= _yt.currentQueue.length) return;
+    // NOTE: mediaPosition/mediaDuration are in MILLISECONDS.
+    final durMs = _dashboard.mediaDuration;
+    final posMs = _dashboard.mediaPosition;
+    if (durMs <= 5000 || posMs < 0) return; // ignore bad/short values
+    // Fire a bit before the true end; YT Music's ~0.5-1s load latency then masks
+    // the gap so the next track starts right as the current one finishes.
+    const leadMs = 1200;
+    final remainingMs = (durMs - posMs - leadMs).round();
+    if (remainingMs < 0) return; // already inside the lead window; reactive covers it
+    _endAdvanceTimer = Timer(Duration(milliseconds: remainingMs), () {
+      if (!_playbackActive || _advancing || !_dashboard.isPlaying) return;
+      if (_currentPlayingIndex < 0 || _currentPlayingIndex + 1 >= _yt.currentQueue.length) return;
+      _currentPlayingIndex++;
+      debugPrint("Collab Auto-DJ: timed advance to index $_currentPlayingIndex");
+      playAt(_currentPlayingIndex);
+    });
   }
 
   int _matchQueueIndex(String track) {

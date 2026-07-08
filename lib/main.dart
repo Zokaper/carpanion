@@ -1776,15 +1776,30 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
                               ]
                             ),
                             clipBehavior: Clip.hardEdge,
-                            child: provider.currentAlbumArtBytes != null
-                                ? Image.memory(
-                                    provider.currentAlbumArtBytes!, 
-                                    fit: BoxFit.cover, 
-                                    errorBuilder: (c, e, s) => Icon(Icons.music_video_rounded, color: onSurface.withOpacity(0.2), size: 60)
-                                  )
-                                : Center(
-                                    child: Icon(Icons.music_video_rounded, color: onSurface.withOpacity(0.2), size: 60),
-                                  ),
+                            child: Builder(builder: (context) {
+                              // Prefer OUR queue cover (e.g. album art) when it matches
+                              // the playing track — the native art of an audio-swapped
+                              // single would otherwise show the single's cover.
+                              final queueArt = context.watch<CollabService>().currentTrackArt;
+                              if (queueArt != null && queueArt.isNotEmpty) {
+                                return Image.network(
+                                  queueArt,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (c, e, s) => provider.currentAlbumArtBytes != null
+                                      ? Image.memory(provider.currentAlbumArtBytes!, fit: BoxFit.cover)
+                                      : Icon(Icons.music_video_rounded, color: onSurface.withOpacity(0.2), size: 60),
+                                );
+                              }
+                              return provider.currentAlbumArtBytes != null
+                                  ? Image.memory(
+                                      provider.currentAlbumArtBytes!,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (c, e, s) => Icon(Icons.music_video_rounded, color: onSurface.withOpacity(0.2), size: 60),
+                                    )
+                                  : Center(
+                                      child: Icon(Icons.music_video_rounded, color: onSurface.withOpacity(0.2), size: 60),
+                                    );
+                            }),
                           );
                         },
                       ),
