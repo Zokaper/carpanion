@@ -592,6 +592,19 @@ class MainActivity : FlutterActivity() {
                         result.success(false)
                     }
                 }
+                "getYtmCookies" -> {
+                    // The WebView shares the app's global CookieManager, so this
+                    // returns the full cookie string for music.youtube.com AFTER an
+                    // in-app login — including httpOnly ones like __Secure-3PAPISID.
+                    try {
+                        val cookies = android.webkit.CookieManager.getInstance()
+                            .getCookie("https://music.youtube.com")
+                        result.success(cookies)
+                    } catch (e: Exception) {
+                        android.util.Log.e("Carpanion", "getYtmCookies error: ${e.message}")
+                        result.success(null)
+                    }
+                }
                 else -> {
                     result.notImplemented()
                 }

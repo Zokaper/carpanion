@@ -1,12 +1,24 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/youtube/v3.dart' as youtube;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
+
+/// A tile on the favorites-screen mix grid (a personalized playlist/mix, or a
+/// pre-fetched song list like "Quick picks").
+class HomeTile {
+  final String title;
+  final String thumbnail;
+  final String? playlistId;
+  final List<Map<String, String>>? songs;
+  const HomeTile({required this.title, required this.thumbnail, this.playlistId, this.songs});
+}
 
 class YouTubeService extends ChangeNotifier {
   final GoogleSignIn _googleSignIn = GoogleSignIn(
@@ -19,8 +31,92 @@ class YouTubeService extends ChangeNotifier {
 
   GoogleSignInAccount? get currentUser => _currentUser;
   bool get isSignedIn => _currentUser != null;
-  
+
+  // --- YouTube Music authenticated session (cookie/SAPISIDHASH, à la SimpMusic) ---
+  // Captured from an in-app music.youtube.com login. Grants the personalized home
+  // feed (Supermix, Quick Picks, …). Live account credentials → Keystore storage.
+  static const _secureStore = FlutterSecureStorage();
+  static const String _kYtmCookie = 'ytm_cookie';
+  static const String _kYtmSapisid = 'ytm_sapisid';
+  String? _ytmCookie;
+  String? _ytmSapisid;
+  bool get isYtmLoggedIn => _ytmCookie != null && _ytmSapisid != null;
+
+  Future<void> loadYtmAuth() async {
+    try {
+      _ytmCookie = await _secureStore.read(key: _kYtmCookie);
+      _ytmSapisid = await _secureStore.read(key: _kYtmSapisid);
+    } catch (e) {
+      debugPrint('loadYtmAuth failed: $e');
+    }
+    notifyListeners();
+  }
+
+  Future<void> setYtmAuth(String cookie, String sapisid) async {
+    _ytmCookie = cookie;
+    _ytmSapisid = sapisid;
+    try {
+      await _secureStore.write(key: _kYtmCookie, value: cookie);
+      await _secureStore.write(key: _kYtmSapisid, value: sapisid);
+    } catch (e) {
+      debugPrint('setYtmAuth persist failed: $e');
+    }
+    notifyListeners();
+  }
+
+  Future<void> clearYtmAuth() async {
+    _ytmCookie = null;
+    _ytmSapisid = null;
+    homeTiles = [];
+    try {
+      await _secureStore.delete(key: _kYtmCookie);
+      await _secureStore.delete(key: _kYtmSapisid);
+    } catch (e) {
+      debugPrint('clearYtmAuth failed: $e');
+    }
+    notifyListeners();
+  }
+
+  /// The `SAPISIDHASH` Authorization value YT Music's web client uses:
+  /// `SAPISIDHASH <ts>_<sha1(ts + " " + SAPISID + " " + origin)>`.
+  String _sapisidHash() {
+    final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final digest = crypto.sha1.convert(
+      utf8.encode('$ts $_ytmSapisid https://music.youtube.com'),
+    );
+    return 'SAPISIDHASH ${ts}_$digest';
+  }
+
+  /// TEMP (Phase 1 validation): fetch the authenticated home feed and log its
+  /// shelves so we can confirm cookie auth works and see the real JSON shape.
+  Future<void> debugDumpHome() async {
+    final data = await _innertubePost('browse', {'browseId': 'FEmusic_home'});
+    if (data == null) {
+      debugPrint('debugDumpHome: null (auth failed or no response)');
+      return;
+    }
+    final shelves = <Map>[];
+    _collectByKey(data, 'musicCarouselShelfRenderer', shelves);
+    debugPrint('debugDumpHome: ${shelves.length} carousel shelves');
+    for (final s in shelves) {
+      final title = _runsText(s['header']?['musicCarouselShelfBasicHeaderRenderer']?['title']);
+      final cards = <Map>[];
+      _collectByKey(s, 'musicTwoRowItemRenderer', cards);
+      final songs = <Map>[];
+      _collectByKey(s, 'musicResponsiveListItemRenderer', songs);
+      debugPrint('  shelf "$title": ${cards.length} cards, ${songs.length} song-rows');
+      for (final c in cards.take(4)) {
+        final ct = _rendererTitle(c);
+        final pid = c['navigationEndpoint']?['watchPlaylistEndpoint']?['playlistId'] ??
+            c['navigationEndpoint']?['browseEndpoint']?['browseId'];
+        debugPrint('      card "$ct" id=$pid');
+      }
+    }
+  }
+
   List<Map<String, dynamic>> currentQueue = [];
+  // Personalized home-feed mix tiles (populated when logged into YT Music).
+  List<HomeTile> homeTiles = [];
   // Caches full YT Music song metadata ({videoId, title, artist, thumbnail}) keyed by search query.
   final Map<String, Map<String, String>> _ytMusicSongCache = {};
 
@@ -54,6 +150,7 @@ class YouTubeService extends ChangeNotifier {
 
   YouTubeService() {
     _loadQueue();
+    loadYtmAuth();
     _googleSignIn.onCurrentUserChanged.listen((GoogleSignInAccount? account) async {
       _currentUser = account;
       if (_currentUser != null) {
@@ -282,14 +379,22 @@ class YouTubeService extends ChangeNotifier {
 
   Future<dynamic> _innertubePost(String endpoint, Map<String, dynamic> extraBody) async {
     final url = Uri.parse('https://music.youtube.com/youtubei/v1/$endpoint?key=$_innertubeKey&prettyPrint=false');
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+      'Origin': 'https://music.youtube.com',
+      'Referer': 'https://music.youtube.com/',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    };
+    // When logged into YT Music, sign the request as the user so personalized
+    // endpoints (the home feed) work. Anonymous callers are unaffected.
+    if (isYtmLoggedIn) {
+      headers['Cookie'] = _ytmCookie!;
+      headers['Authorization'] = _sapisidHash();
+      headers['X-Goog-AuthUser'] = '0';
+    }
     final response = await http.post(
       url,
-      headers: {
-        'Content-Type': 'application/json',
-        'Origin': 'https://music.youtube.com',
-        'Referer': 'https://music.youtube.com/',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
+      headers: headers,
       body: jsonEncode({
         'context': {
           'client': {'clientName': 'WEB_REMIX', 'clientVersion': '1.20231204.01.00'},
@@ -298,6 +403,11 @@ class YouTubeService extends ChangeNotifier {
       }),
     ).timeout(const Duration(seconds: 8));
     if (response.statusCode == 200) return jsonDecode(response.body);
+    // Expired/invalid cookies → drop the session so the UI reverts to logged-out.
+    if ((response.statusCode == 401 || response.statusCode == 403) && isYtmLoggedIn) {
+      debugPrint('Innertube $endpoint ${response.statusCode} while authed — clearing YT Music session');
+      clearYtmAuth();
+    }
     debugPrint('Innertube $endpoint returned ${response.statusCode}');
     return null;
   }
@@ -453,27 +563,7 @@ class YouTubeService extends ChangeNotifier {
         debugPrint('getArtistRadioTracks: no radio playlist for "$artist"');
         return [];
       }
-      final next = await _innertubePost('next', {'playlistId': radioId, 'isAudioOnly': true});
-      final renderers = <Map>[];
-      _collectByKey(next, 'playlistPanelVideoRenderer', renderers);
-      final tracks = <Map<String, String>>[];
-      for (final r in renderers) {
-        final videoId = r['videoId']?.toString();
-        if (videoId == null || videoId.isEmpty) continue;
-        final title = _runsText(r['title']);
-        final byline = _runsText(r['longBylineText'] ?? r['shortBylineText']);
-        String thumb = '';
-        final thumbs = r['thumbnail']?['thumbnails'];
-        if (thumbs is List && thumbs.isNotEmpty) {
-          thumb = (thumbs.last['url']?.toString() ?? '').replaceAll(RegExp(r'=w\d+-h\d+'), '=w400-h400');
-        }
-        tracks.add({
-          'videoId': videoId,
-          'title': title.isNotEmpty ? title : 'Unknown',
-          'artist': byline.split('•').first.trim(),
-          'thumbnail': thumb,
-        });
-      }
+      final tracks = await _playlistPanelTracks(radioId);
       // The RD… radio seed is deterministic (same first track every time), so
       // shuffle for variety — the order isn't meaningful for our finite grab.
       tracks.shuffle(_rng);
@@ -483,6 +573,141 @@ class YouTubeService extends ChangeNotifier {
       debugPrint('getArtistRadioTracks failed: $e');
       return [];
     }
+  }
+
+  /// Expands a playlist/mix/radio id (RD…, RDCLAK5uy…, OLAK5uy…) into tracks via
+  /// the `next` endpoint (audio-only). Shared by artist radio and home mixes.
+  Future<List<Map<String, String>>> _playlistPanelTracks(String playlistId) async {
+    final next = await _innertubePost('next', {'playlistId': playlistId, 'isAudioOnly': true});
+    final renderers = <Map>[];
+    _collectByKey(next, 'playlistPanelVideoRenderer', renderers);
+    final tracks = <Map<String, String>>[];
+    for (final r in renderers) {
+      final videoId = r['videoId']?.toString();
+      if (videoId == null || videoId.isEmpty) continue;
+      final title = _runsText(r['title']);
+      final byline = _runsText(r['longBylineText'] ?? r['shortBylineText']);
+      String thumb = '';
+      final thumbs = r['thumbnail']?['thumbnails'];
+      if (thumbs is List && thumbs.isNotEmpty) {
+        thumb = (thumbs.last['url']?.toString() ?? '').replaceAll(RegExp(r'=w\d+-h\d+'), '=w400-h400');
+      }
+      tracks.add({
+        'videoId': videoId,
+        'title': title.isNotEmpty ? title : 'Unknown',
+        'artist': byline.split('•').first.trim(),
+        'thumbnail': thumb,
+      });
+    }
+    return tracks;
+  }
+
+  // --- Personalized home feed (authenticated) → mix tiles ---------------------
+  //
+  // ⚠️ Best-effort parse of FEmusic_home; TUNE against the real JSON on-device
+  // (see debugDumpHome). Returns []/keeps prior tiles on any failure.
+
+  /// Fetches the personalized home feed and selects up to 4 mix tiles, with
+  /// Supermix pinned first, then a stable preferred set, then feed order.
+  Future<List<HomeTile>> fetchHomeTiles() async {
+    if (!isYtmLoggedIn) {
+      homeTiles = [];
+      notifyListeners();
+      return homeTiles;
+    }
+    try {
+      final data = await _innertubePost('browse', {'browseId': 'FEmusic_home'});
+      if (data == null) return homeTiles;
+
+      // Playlist/mix cards (two-row items) that carry a playable id.
+      final cards = <Map>[];
+      _collectByKey(data, 'musicTwoRowItemRenderer', cards);
+      final candidates = <HomeTile>[];
+      final seen = <String>{};
+      for (final c in cards) {
+        final title = _rendererTitle(c).trim();
+        if (title.isEmpty) continue;
+        final nav = c['navigationEndpoint'];
+        final pid = (nav?['watchPlaylistEndpoint']?['playlistId'] ??
+                nav?['browseEndpoint']?['browseId'])
+            ?.toString();
+        if (pid == null || pid.isEmpty || seen.contains(pid)) continue;
+        // Only playable playlists/mixes — skip artist (UC…) / album (MPRE…) cards.
+        if (!(pid.startsWith('RD') || pid.startsWith('VL') || pid.startsWith('OLAK') || pid.startsWith('PL'))) {
+          continue;
+        }
+        seen.add(pid);
+        candidates.add(HomeTile(title: title, thumbnail: _findFirstThumbnail(c) ?? '', playlistId: pid));
+      }
+
+      // Best-effort "Quick picks" shelf (individual songs, not a card).
+      final qp = _quickPicksTile(data);
+      if (qp != null) candidates.insert(0, qp);
+
+      // Select a stable set of 4: pin the preferred names in order, then fill.
+      const prefs = ['supermix', 'quick picks', 'discover mix', 'new release mix', 'my mix', 'listen again'];
+      final selected = <HomeTile>[];
+      final used = <String>{};
+      String key(HomeTile t) => t.playlistId ?? t.title;
+      for (final p in prefs) {
+        for (final c in candidates) {
+          if (used.contains(key(c))) continue;
+          if (c.title.toLowerCase().contains(p)) {
+            selected.add(c);
+            used.add(key(c));
+            break;
+          }
+        }
+        if (selected.length >= 4) break;
+      }
+      for (final c in candidates) {
+        if (selected.length >= 4) break;
+        if (!used.contains(key(c))) {
+          selected.add(c);
+          used.add(key(c));
+        }
+      }
+
+      homeTiles = selected.take(4).toList();
+      debugPrint('fetchHomeTiles: ${candidates.length} candidates → ${homeTiles.length} tiles '
+          '[${homeTiles.map((t) => t.title).join(", ")}]');
+      notifyListeners();
+      return homeTiles;
+    } catch (e) {
+      debugPrint('fetchHomeTiles failed: $e');
+      return homeTiles;
+    }
+  }
+
+  /// Builds a "Quick picks" tile from its song shelf, if present.
+  HomeTile? _quickPicksTile(dynamic data) {
+    final shelves = <Map>[];
+    _collectByKey(data, 'musicCarouselShelfRenderer', shelves);
+    for (final s in shelves) {
+      final title = _runsText(s['header']?['musicCarouselShelfBasicHeaderRenderer']?['title']);
+      if (!title.toLowerCase().contains('quick picks')) continue;
+      final rows = <Map>[];
+      _collectByKey(s, 'musicResponsiveListItemRenderer', rows);
+      final songs = <Map<String, String>>[];
+      for (final r in rows) {
+        final parsed = _parseSongRenderer(r);
+        if (parsed != null) songs.add(parsed);
+      }
+      if (songs.isNotEmpty) {
+        return HomeTile(title: title, thumbnail: songs.first['thumbnail'] ?? '', songs: songs);
+      }
+    }
+    return null;
+  }
+
+  /// Resolves a mix tile to a playable track list for the native queue.
+  Future<List<Map<String, String>>> getMixTracks(HomeTile tile) async {
+    if (tile.songs != null && tile.songs!.isNotEmpty) return tile.songs!;
+    final pid = tile.playlistId;
+    if (pid == null || pid.isEmpty) return [];
+    // A `VL…` browse id wraps the raw playlist id; `next` wants the raw id.
+    final playable = pid.startsWith('VL') ? pid.substring(2) : pid;
+    return _playlistPanelTracks(playable);
   }
 
   /// Fetches the artist's OWN songs (not radio) — as many as YT Music exposes —

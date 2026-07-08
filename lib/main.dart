@@ -22,6 +22,7 @@ import 'services/youtube_service.dart';
 import 'services/collab_service.dart';
 import 'dart:math' as math;
 import 'ui/queue_tab.dart';
+import 'ui/ytmusic_login_webview.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -146,12 +147,9 @@ class DashboardProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  // Favorites state variables
-  List<Map<String, String>> _favorites = [
-    {'type': 'playlist', 'title': 'My Supermix', 'url': 'My Supermix', 'subtitle': 'YouTube Music'},
-    {'type': 'playlist', 'title': 'Chill Beats', 'url': 'Chill Beats', 'subtitle': 'YouTube Music'},
-    {'type': 'playlist', 'title': 'Driving Anthems', 'url': 'Driving Anthems', 'subtitle': 'YouTube Music'},
-  ];
+  // Favorites state variables. Only song/album/artist now — playlists/mixes live
+  // in the home-feed grid on the favorites screen (V4).
+  List<Map<String, String>> _favorites = [];
   Map<String, String>? _pendingSharedFavorite;
   
   List<Map<String, String>> get favorites => _favorites;
@@ -1099,9 +1097,13 @@ class DashboardProvider with ChangeNotifier {
       try {
         final decoded = jsonDecode(json);
         if (decoded is List) {
-          _favorites = decoded
+          final all = decoded
               .map((e) => (e as Map).map((k, v) => MapEntry(k.toString(), v?.toString() ?? '')))
               .toList();
+          // V4: playlist/mix favorites moved to the home-feed grid — strip any
+          // lingering ones so the list is song/album/artist only.
+          _favorites = all.where((f) => (f['type'] ?? 'playlist') != 'playlist').toList();
+          if (_favorites.length != all.length) await saveFavorites();
           notifyListeners();
           return;
         }
@@ -2415,32 +2417,173 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
         Expanded(
           child: _showQueue
               ? const QueueTab()
-              : ListView.builder(
-            itemCount: provider.favorites.length,
-            padding: const EdgeInsets.only(top: 4.0),
-            itemBuilder: (context, index) {
-              final fav = provider.favorites[index];
-              final isArtist = (fav['type'] ?? '') == 'artist';
-              return Padding(
-                padding: EdgeInsets.only(bottom: index == provider.favorites.length - 1 ? 0 : 8.0),
-                child: _PlaylistCard(
-                  title: fav['title'] ?? 'Unknown',
-                  subtitle: fav['subtitle'] ?? 'YouTube Music Playlist',
-                  startColor: startColors[index % startColors.length],
-                  endColor: endColors[index % endColors.length],
-                  icon: _iconForFavoriteType(fav['type'], icons[index % icons.length]),
-                  // Artist favorites offer a Radio vs Artist choice on tap; all
-                  // other types play immediately.
-                  onTap: isArtist ? null : () => _playFavorite(context, fav),
-                  onRadioTap: isArtist ? () => _playFavorite(context, fav, artistMode: 'radio') : null,
-                  onArtistTap: isArtist ? () => _playFavorite(context, fav, artistMode: 'artist') : null,
-                  onLongPress: () => provider.removeFavoriteAt(index),
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Personalized mix grid (YT Music home feed).
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4.0, bottom: 8.0),
+                      child: _buildMixGrid(context, theme, onSurface),
+                    ),
+                    // Song / album / artist favorites.
+                    Expanded(
+                      child: ListView.builder(
+                        itemCount: provider.favorites.length,
+                        itemBuilder: (context, index) {
+                          final fav = provider.favorites[index];
+                          final isArtist = (fav['type'] ?? '') == 'artist';
+                          return Padding(
+                            padding: EdgeInsets.only(bottom: index == provider.favorites.length - 1 ? 0 : 8.0),
+                            child: _PlaylistCard(
+                              title: fav['title'] ?? 'Unknown',
+                              subtitle: fav['subtitle'] ?? 'YouTube Music',
+                              startColor: startColors[index % startColors.length],
+                              endColor: endColors[index % endColors.length],
+                              icon: _iconForFavoriteType(fav['type'], icons[index % icons.length]),
+                              onTap: isArtist ? null : () => _playFavorite(context, fav),
+                              onRadioTap: isArtist ? () => _playFavorite(context, fav, artistMode: 'radio') : null,
+                              onArtistTap: isArtist ? () => _playFavorite(context, fav, artistMode: 'artist') : null,
+                              onLongPress: () => provider.removeFavoriteAt(index),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                 ),
-              );
-            },
-          ),
         ),
       ],
+    );
+  }
+
+  bool _tilesRequested = false;
+
+  Widget _buildMixGrid(BuildContext context, ThemeData theme, Color onSurface) {
+    final yt = context.watch<YouTubeService>();
+    if (!yt.isYtmLoggedIn) {
+      _tilesRequested = false;
+      return GestureDetector(
+        onTap: () => _connectYtMusic(context),
+        child: Container(
+          height: 56,
+          decoration: BoxDecoration(
+            color: theme.colorScheme.primary.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: theme.colorScheme.primary.withOpacity(0.4)),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.library_music, size: 16, color: theme.colorScheme.primary),
+              const SizedBox(width: 8),
+              Text(
+                "Connect YouTube Music",
+                style: TextStyle(color: theme.colorScheme.primary, fontSize: 12, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    final tiles = yt.homeTiles;
+    if (tiles.isEmpty && !_tilesRequested) {
+      _tilesRequested = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => yt.fetchHomeTiles());
+    }
+    final children = tiles.isEmpty
+        ? List.generate(4, (_) => _mixSkeleton(onSurface))
+        : [for (final t in tiles.take(4)) _MixTile(tile: t, onTap: () => _playMix(context, t))];
+    return GridView.count(
+      crossAxisCount: 2,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      mainAxisSpacing: 8,
+      crossAxisSpacing: 8,
+      childAspectRatio: 1.6,
+      children: children,
+    );
+  }
+
+  Widget _mixSkeleton(Color onSurface) => Container(
+        decoration: BoxDecoration(
+          color: onSurface.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(12),
+        ),
+      );
+
+  Future<void> _connectYtMusic(BuildContext context) async {
+    final yt = context.read<YouTubeService>();
+    final result = await Navigator.of(context).push<Map>(
+      MaterialPageRoute(builder: (_) => const YtMusicLoginWebView()),
+    );
+    if (result != null && result['cookie'] != null && result['sapisid'] != null) {
+      await yt.setYtmAuth(result['cookie'].toString(), result['sapisid'].toString());
+      await yt.fetchHomeTiles();
+    }
+  }
+
+  Future<void> _playMix(BuildContext context, HomeTile tile) async {
+    final yt = context.read<YouTubeService>();
+    final collab = context.read<CollabService>();
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(SnackBar(content: Text('Loading ${tile.title}…'), duration: const Duration(seconds: 2)));
+    final tracks = await yt.getMixTracks(tile);
+    if (tracks.isNotEmpty) {
+      await collab.loadQueueAndPlay(tracks);
+      _goToQueueView();
+    } else if (context.mounted) {
+      messenger.showSnackBar(const SnackBar(content: Text('Could not load that mix')));
+    }
+  }
+}
+
+/// A mix block in the favorites-screen grid: cover art + label, tap to play.
+class _MixTile extends StatelessWidget {
+  final HomeTile tile;
+  final VoidCallback onTap;
+  const _MixTile({required this.tile, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (tile.thumbnail.isNotEmpty)
+              Image.network(
+                tile.thumbnail,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(color: Colors.grey.withOpacity(0.25)),
+              )
+            else
+              Container(color: Colors.grey.withOpacity(0.25)),
+            // Bottom scrim for label legibility.
+            Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.center,
+                  end: Alignment.bottomCenter,
+                  colors: [Colors.transparent, Colors.black.withOpacity(0.75)],
+                ),
+              ),
+            ),
+            Positioned(
+              left: 8,
+              right: 8,
+              bottom: 8,
+              child: Text(
+                tile.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

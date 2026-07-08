@@ -4,6 +4,7 @@ import '../main.dart';
 import '../theme/dynamic_theme.dart';
 import '../services/collab_service.dart';
 import '../services/youtube_service.dart';
+import 'ytmusic_login_webview.dart';
 
 /// Fullscreen, reorganized settings page. Rendered as a top-level Stack layer
 /// (see main.dart) rather than a floating dialog. Each feature can be toggled
@@ -208,7 +209,92 @@ class _MediaCollabSection extends StatelessWidget {
           ),
         ],
         const _GoogleAccountCard(),
+        const _YtMusicAccountCard(),
       ],
+    );
+  }
+}
+
+/// YouTube Music login (cookie/WebView) — powers the personalized mix grid on the
+/// favorites screen (Supermix, Quick Picks, …).
+class _YtMusicAccountCard extends StatelessWidget {
+  const _YtMusicAccountCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final yt = context.watch<YouTubeService>();
+    final theme = Theme.of(context);
+    final onSurface = theme.colorScheme.onSurface;
+    final connected = yt.isYtmLoggedIn;
+
+    return _CardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            "YouTube Music (personalized mixes)",
+            style: TextStyle(color: onSurface, fontSize: 15, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            "Sign in to play your Supermix, Quick Picks and other mixes from your YT "
+            "Music home in the native queue. Uses an in-app YouTube Music login.",
+            style: TextStyle(color: onSurface.withOpacity(0.6), fontSize: 12, height: 1.3),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Icon(
+                connected ? Icons.check_circle : Icons.account_circle_outlined,
+                color: connected ? Colors.green : onSurface.withOpacity(0.4),
+                size: 16,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  connected ? "Connected" : "Not connected",
+                  style: TextStyle(color: onSurface.withOpacity(0.75), fontSize: 12, fontWeight: FontWeight.w500),
+                ),
+              ),
+              if (connected)
+                TextButton(
+                  onPressed: () => yt.clearYtmAuth(),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: Text(
+                    "DISCONNECT",
+                    style: TextStyle(color: onSurface.withOpacity(0.6), fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                )
+              else
+                TextButton(
+                  onPressed: () async {
+                    final result = await Navigator.of(context).push<Map>(
+                      MaterialPageRoute(builder: (_) => const YtMusicLoginWebView()),
+                    );
+                    if (result != null && result['cookie'] != null && result['sapisid'] != null) {
+                      await yt.setYtmAuth(result['cookie'].toString(), result['sapisid'].toString());
+                      await yt.fetchHomeTiles();
+                    }
+                  },
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    backgroundColor: theme.colorScheme.primary.withOpacity(0.12),
+                  ),
+                  child: Text(
+                    "CONNECT",
+                    style: TextStyle(color: theme.colorScheme.primary, fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
