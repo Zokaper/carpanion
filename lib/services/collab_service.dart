@@ -327,11 +327,78 @@ class CollabService extends ChangeNotifier {
   }
 
   /// Replaces the queue with a resolved track list (album tracks / artist radio)
-  /// and starts playing from the top.
-  Future<void> loadQueueAndPlay(List<Map<String, String>> songs) async {
+  /// and starts playing from the top. When [resolveAudio] is set (albums), the
+  /// video (OMV) ids YT Music hands out for tracks with a music video are swapped
+  /// for the audio-only (ATV) version — the first track before it plays, the rest
+  /// in the background — so albums play audio instead of the music video.
+  Future<void> loadQueueAndPlay(List<Map<String, String>> songs, {bool resolveAudio = false}) async {
     if (songs.isEmpty) return;
     await _yt.replaceQueue(songs);
+    if (resolveAudio) {
+      // Resolve just the first track up front (bounded ~3s) so playback starts on
+      // audio without a restart; if it's slow we start anyway and the background
+      // pass fixes it. The rest are swapped lazily in the background.
+      try {
+        await _resolveQueueItemAudio(0).timeout(const Duration(seconds: 3));
+      } catch (_) {/* start now; background pass will catch index 0 */}
+    }
     playAt(0);
+    if (resolveAudio) {
+      _resolveQueueAudioInBackground(); // fire-and-forget
+    }
+  }
+
+  /// Re-resolves a single queue item to its audio version if it's a video track.
+  /// Returns true if the id changed. Guards against the queue being replaced mid-flight.
+  Future<bool> _resolveQueueItemAudio(int index) async {
+    final queue = _yt.currentQueue;
+    if (index < 0 || index >= queue.length) return false;
+    final item = queue[index];
+    final vt = (item['videoType'] ?? '').toString();
+    if (vt.isEmpty || vt.contains('ATV')) return false; // already audio / unknown
+    final title = (item['title'] ?? '').toString();
+    final artist = (item['artist'] ?? '').toString();
+    final id = (item['id'] ?? '').toString();
+    final audioId = await _yt.resolveAudioVideoId(title, artist);
+    // Bail if the queue changed under us (different item now at this index).
+    if (index >= _yt.currentQueue.length || (_yt.currentQueue[index]['id'] ?? '') != id) return false;
+    if (audioId == null) {
+      _yt.currentQueue[index]['videoType'] = 'MUSIC_VIDEO_TYPE_ATV'; // don't retry
+      return false;
+    }
+    final changed = audioId != _yt.currentQueue[index]['videoId'];
+    await _yt.setQueueItemVideoId(index, audioId);
+    if (changed) debugPrint('Collab: swapped track $index "$title" video→audio ($audioId)');
+    return changed;
+  }
+
+  /// Background swap of the remaining video tracks (bounded concurrency to stay
+  /// gentle on YT Music's anonymous API). Restarts the current track as audio if
+  /// its id changes while it's playing.
+  Future<void> _resolveQueueAudioInBackground() async {
+    final targets = <int>[];
+    for (int i = 0; i < _yt.currentQueue.length; i++) {
+      final vt = (_yt.currentQueue[i]['videoType'] ?? '').toString();
+      if (vt.isNotEmpty && !vt.contains('ATV')) targets.add(i);
+    }
+    if (targets.isEmpty) return;
+
+    int next = 0;
+    Future<void> worker() async {
+      while (true) {
+        final k = next++;
+        if (k >= targets.length) break;
+        final i = targets[k];
+        final changed = await _resolveQueueItemAudio(i);
+        // If we just fixed the track that's playing right now, restart it as audio.
+        if (changed && i == _currentPlayingIndex && _playbackActive) {
+          playAt(i);
+        }
+      }
+    }
+
+    await Future.wait(List.generate(3, (_) => worker()));
+    _onQueueUpdate(); // push the audio-swapped queue to passengers
   }
 
   // --- Enable / Disable — sharing layer only, never touches playback ---

@@ -2170,7 +2170,7 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
       messenger.showSnackBar(SnackBar(content: Text('Loading album "${fav['title']}"…'), duration: const Duration(seconds: 2)));
       final tracks = await yt.getAlbumTracks(fav['title'] ?? '', fav['subtitle'] ?? '');
       if (tracks.isNotEmpty) {
-        await collab.loadQueueAndPlay(tracks);
+        await collab.loadQueueAndPlay(tracks, resolveAudio: true);
         _goToQueueView();
         return;
       }

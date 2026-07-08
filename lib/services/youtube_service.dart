@@ -181,7 +181,7 @@ class YouTubeService extends ChangeNotifier {
           'query': trimmed,
           'params': 'EgWKAQIIAWoKEAkQBRAKEAMQBA==', // Filter: Songs only
         }),
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -793,10 +793,42 @@ class YouTubeService extends ChangeNotifier {
         'title': s['title'] ?? 'Unknown',
         'artist': s['artist'] ?? '',
         'thumbnail': s['thumbnail'] ?? '',
+        // Retained so the queue can background-swap video (OMV) ids for audio.
+        'videoType': s['videoType'] ?? '',
       };
     });
     await _saveQueue();
     notifyListeners();
+  }
+
+  /// Resolves a track's audio-only (ATV) videoId via a Songs search. Returns null
+  /// if no confident audio match is found. Used to swap album video ids for audio.
+  Future<String?> resolveAudioVideoId(String title, String artist) async {
+    if (title.trim().isEmpty) return null;
+    try {
+      final results = await searchYTMusicSongs('$title $artist', limit: 3)
+          .timeout(const Duration(seconds: 6));
+      final want = title.toLowerCase();
+      for (final r in results) {
+        if (!(r['videoType'] ?? '').contains('ATV')) continue;
+        final rt = (r['title'] ?? '').toLowerCase();
+        if (rt == want || rt.contains(want) || want.contains(rt)) {
+          final vid = r['videoId'] ?? '';
+          if (vid.isNotEmpty) return vid;
+        }
+      }
+    } catch (_) {/* keep the original id on failure */}
+    return null;
+  }
+
+  /// Updates a queue item's playable videoId (e.g. after audio re-resolution)
+  /// and marks it resolved so it isn't re-processed. Persists + notifies.
+  Future<void> setQueueItemVideoId(int index, String videoId) async {
+    if (index < 0 || index >= currentQueue.length) return;
+    currentQueue[index]['videoId'] = videoId;
+    currentQueue[index]['videoType'] = 'MUSIC_VIDEO_TYPE_ATV';
+    notifyListeners();
+    await _saveQueue();
   }
 
   Future<void> clearPlaylist() async {
