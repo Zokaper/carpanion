@@ -150,10 +150,8 @@ class DashboardProvider with ChangeNotifier {
   // Favorites state variables. Only song/album/artist now — playlists/mixes live
   // in the home-feed grid on the favorites screen (V4).
   List<Map<String, String>> _favorites = [];
-  Map<String, String>? _pendingSharedFavorite;
-  
+
   List<Map<String, String>> get favorites => _favorites;
-  Map<String, String>? get pendingSharedFavorite => _pendingSharedFavorite;
 
   // Now Playing state variables
   String _currentTrack = 'Not Playing';
@@ -1138,30 +1136,12 @@ class DashboardProvider with ChangeNotifier {
     saveFavorites();
   }
 
-  void clearPendingSharedFavorite() {
-    _pendingSharedFavorite = null;
-    notifyListeners();
-  }
-
-  void replaceFavorite(int index, Map<String, String> newFavorite) {
-    if (index >= 0 && index < _favorites.length) {
-      _favorites[index] = newFavorite;
-      saveFavorites();
-      notifyListeners();
-    }
-  }
-
   void addNewFavorite(Map<String, String> newFav) {
-    if (_favorites.length < 8) {
-      _favorites.insert(0, newFav);
-      saveFavorites();
-      setSidebarTab(0); // Switch to Media tab
-      notifyListeners();
-    } else {
-      _pendingSharedFavorite = newFav;
-      setSidebarTab(0); // Switch to Media tab
-      notifyListeners();
-    }
+    // No cap — favorites list scrolls and is type-filterable, so add freely.
+    _favorites.insert(0, newFav);
+    saveFavorites();
+    setSidebarTab(0); // Switch to Media tab
+    notifyListeners();
   }
 
   void removeFavoriteAt(int index) {
@@ -1262,11 +1242,6 @@ class DashboardProvider with ChangeNotifier {
                      notifyListeners();
                      break;
                    }
-                 }
-                 if (_pendingSharedFavorite != null && _pendingSharedFavorite!['url'] == url && _pendingSharedFavorite!['title'] == "Loading...") {
-                   _pendingSharedFavorite!['title'] = finalTitle.length > 40 ? "${finalTitle.substring(0, 37)}..." : finalTitle;
-                   _pendingSharedFavorite!['subtitle'] = finalSubtitle;
-                   notifyListeners();
                  }
                  return; // Avoid doing it synchronously below
                }
@@ -1849,36 +1824,6 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
           
           const SizedBox(height: 12),
 
-          // "Playing from queue" badge — makes it obvious when OUR queue is driving
-          // playback (vs YT Music playing on its own).
-          if (context.watch<CollabService>().playbackActive)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6.0),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.primary.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.queue_music, size: 12, color: theme.colorScheme.primary),
-                    const SizedBox(width: 5),
-                    Text(
-                      "QUEUE",
-                      style: TextStyle(
-                        color: theme.colorScheme.primary,
-                        fontSize: 9,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.0,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
           // Track Info
           AutoScrollText(
              text: provider.currentTrack,
@@ -1985,7 +1930,38 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
           ),
         ],
       ),
-          
+
+      // "Playing from queue" badge — pinned top-left over the album art so it
+      // no longer steals vertical space from the (already small) square cover.
+      if (context.watch<CollabService>().playbackActive)
+        Positioned(
+          top: 0,
+          left: 0,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.queue_music, size: 12, color: theme.colorScheme.primary),
+                const SizedBox(width: 5),
+                Text(
+                  "QUEUE",
+                  style: TextStyle(
+                    color: theme.colorScheme.primary,
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.0,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+
       Positioned(
         top: 0,
         right: 0,
@@ -2138,63 +2114,8 @@ class FavoritesSidebar extends StatefulWidget {
 
 class _FavoritesSidebarState extends State<FavoritesSidebar> {
   bool _showQueue = false;
-
-  void _showReplaceDialog(DashboardProvider provider) {
-    final pending = provider.pendingSharedFavorite;
-    if (pending == null) return;
-    
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF151525),
-          title: const Text("Favorites Full", style: TextStyle(color: Colors.white)),
-          content: SizedBox(
-            width: double.maxFinite,
-            height: 280,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text("Your 8 Quick Favorites are full. Which one should be replaced by '${pending['title']}'?", 
-                  style: const TextStyle(color: Colors.white70, fontSize: 13)),
-                const SizedBox(height: 16),
-                Expanded(
-                  child: ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: provider.favorites.length,
-                    itemBuilder: (context, index) {
-                      final fav = provider.favorites[index];
-                      return ListTile(
-                        title: Text(fav['title']!, style: const TextStyle(color: Colors.white)),
-                        subtitle: Text(fav['url']!, style: const TextStyle(color: Colors.white54, fontSize: 10)),
-                        trailing: const Icon(Icons.swap_horiz, color: Color(0xFF00E5FF)),
-                        onTap: () {
-                          provider.replaceFavorite(index, pending);
-                          provider.clearPendingSharedFavorite();
-                          Navigator.pop(context);
-                        },
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                provider.clearPendingSharedFavorite();
-                Navigator.pop(context);
-              },
-              child: const Text("CANCEL"),
-            ),
-          ],
-        );
-      }
-    );
-  }
+  // Active type filter for the favorites list: 'all' | 'song' | 'album' | 'artist'.
+  String _favFilter = 'all';
 
   IconData _iconForFavoriteType(String? type, IconData fallback) {
     switch (type) {
@@ -2336,14 +2257,6 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
 
-    if (provider.pendingSharedFavorite != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (provider.pendingSharedFavorite != null) {
-          _showReplaceDialog(provider);
-        }
-      });
-    }
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -2420,39 +2333,131 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // Personalized mix grid (YT Music home feed).
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4.0, bottom: 8.0),
-                      child: _buildMixGrid(context, theme, onSurface),
-                    ),
-                    // Song / album / artist favorites.
-                    Expanded(
-                      child: ListView.builder(
-                        itemCount: provider.favorites.length,
-                        itemBuilder: (context, index) {
-                          final fav = provider.favorites[index];
-                          final isArtist = (fav['type'] ?? '') == 'artist';
-                          return Padding(
-                            padding: EdgeInsets.only(bottom: index == provider.favorites.length - 1 ? 0 : 8.0),
-                            child: _PlaylistCard(
-                              title: fav['title'] ?? 'Unknown',
-                              subtitle: fav['subtitle'] ?? 'YouTube Music',
-                              startColor: startColors[index % startColors.length],
-                              endColor: endColors[index % endColors.length],
-                              icon: _iconForFavoriteType(fav['type'], icons[index % icons.length]),
-                              onTap: isArtist ? null : () => _playFavorite(context, fav),
-                              onRadioTap: isArtist ? () => _playFavorite(context, fav, artistMode: 'radio') : null,
-                              onArtistTap: isArtist ? () => _playFavorite(context, fav, artistMode: 'artist') : null,
-                              onLongPress: () => provider.removeFavoriteAt(index),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
+                    // Pinned type filter (All / Songs / Albums / Artists) — always
+                    // reachable so you can switch without scrolling to the top.
+                    _buildFilterChips(theme, onSurface, provider),
+                    Expanded(child: _buildFavoritesList(context, theme, onSurface, provider)),
                   ],
                 ),
         ),
       ],
+    );
+  }
+
+  /// The pinned row of type-filter chips above the favorites list.
+  Widget _buildFilterChips(ThemeData theme, Color onSurface, DashboardProvider provider) {
+    final favs = provider.favorites;
+    int countOf(String t) => favs.where((f) => (f['type'] ?? '') == t).length;
+    final entries = <List<String>>[
+      ['all', 'All'],
+      ['song', 'Songs'],
+      ['album', 'Albums'],
+      ['artist', 'Artists'],
+    ];
+    final counts = {
+      'all': favs.length,
+      'song': countOf('song'),
+      'album': countOf('album'),
+      'artist': countOf('artist'),
+    };
+    return Padding(
+      padding: const EdgeInsets.only(top: 2.0, bottom: 6.0),
+      child: Row(
+        children: [
+          for (final e in entries)
+            Expanded(
+              child: Padding(
+                padding: EdgeInsets.only(right: e[0] == 'artist' ? 0 : 5.0),
+                child: _favFilterChip(theme, onSurface, e[0], e[1], counts[e[0]]!),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _favFilterChip(ThemeData theme, Color onSurface, String key, String label, int count) {
+    final active = _favFilter == key;
+    return GestureDetector(
+      onTap: () => setState(() => _favFilter = key),
+      child: Container(
+        height: 28,
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        decoration: BoxDecoration(
+          color: active ? theme.colorScheme.primary : onSurface.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            count > 0 ? '$label  $count' : label,
+            maxLines: 1,
+            style: TextStyle(
+              color: active ? Colors.white : onSurface.withOpacity(0.7),
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 0.3,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The favorites list for the active filter. The personalized mix grid rides
+  /// on top as a scroll-away header, but only in the unfiltered "All" view.
+  Widget _buildFavoritesList(BuildContext context, ThemeData theme, Color onSurface, DashboardProvider provider) {
+    final showMixGrid = _favFilter == 'all';
+    final visible = showMixGrid
+        ? provider.favorites
+        : provider.favorites.where((f) => (f['type'] ?? '') == _favFilter).toList();
+
+    if (visible.isEmpty && !showMixGrid) {
+      final label = _favFilter == 'song'
+          ? 'songs'
+          : _favFilter == 'album'
+              ? 'albums'
+              : 'artists';
+      return Center(
+        child: Text(
+          'No $label favorited yet',
+          style: TextStyle(color: onSurface.withOpacity(0.4), fontSize: 12),
+        ),
+      );
+    }
+
+    final header = showMixGrid ? 1 : 0;
+    return ListView.builder(
+      itemCount: visible.length + header,
+      itemBuilder: (context, index) {
+        if (showMixGrid && index == 0) {
+          // Personalized mix grid (YT Music home feed).
+          return Padding(
+            padding: const EdgeInsets.only(top: 4.0, bottom: 8.0),
+            child: _buildMixGrid(context, theme, onSurface),
+          );
+        }
+        final favIndex = index - header;
+        final fav = visible[favIndex];
+        final isArtist = (fav['type'] ?? '') == 'artist';
+        return Padding(
+          padding: EdgeInsets.only(bottom: favIndex == visible.length - 1 ? 0 : 8.0),
+          child: _PlaylistCard(
+            title: fav['title'] ?? 'Unknown',
+            subtitle: fav['subtitle'] ?? 'YouTube Music',
+            startColor: startColors[favIndex % startColors.length],
+            endColor: endColors[favIndex % endColors.length],
+            icon: _iconForFavoriteType(fav['type'], icons[favIndex % icons.length]),
+            onTap: isArtist ? null : () => _playFavorite(context, fav),
+            onRadioTap: isArtist ? () => _playFavorite(context, fav, artistMode: 'radio') : null,
+            onArtistTap: isArtist ? () => _playFavorite(context, fav, artistMode: 'artist') : null,
+            // Remove by identity (title+type) so it targets the right entry even
+            // when the list is filtered (index no longer maps to provider index).
+            onLongPress: () => provider.removeFavoriteTyped(fav['title'] ?? '', fav['type'] ?? ''),
+          ),
+        );
+      },
     );
   }
 
