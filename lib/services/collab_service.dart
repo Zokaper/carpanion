@@ -45,10 +45,6 @@ class CollabService extends ChangeNotifier {
   // Tracked to detect changes coming from DashboardProvider notifications.
   String _lastTrack = '';
   bool _lastPlaying = false;
-  // Previous poll's position/duration (ms), used to tell a natural song-end from
-  // the user playing something unrelated in YT Music.
-  double _lastPosMs = 0;
-  double _lastDurMs = 0;
 
   // True while an Auto-DJ advance is in flight (target track still loading in YT
   // Music), to prevent double-advancing past queue entries.
@@ -299,13 +295,6 @@ class CollabService extends ChangeNotifier {
     // unchanged-track early-return below.
     _scheduleEndAdvance();
 
-    // Snapshot the PREVIOUS tick's position before overwriting — used below to
-    // tell a natural song-end from an unrelated track the user started.
-    final prevPosMs = _lastPosMs;
-    final prevDurMs = _lastDurMs;
-    _lastPosMs = _dashboard.mediaPosition;
-    _lastDurMs = _dashboard.mediaDuration;
-
     if (_dashboard.currentTrack == _lastTrack) return;
     _lastTrack = _dashboard.currentTrack;
     _socket?.emit('update_playing_status', _lastTrack);
@@ -322,19 +311,24 @@ class CollabService extends ChangeNotifier {
         _persist();
       }
     } else if (_playbackActive && _currentPlayingIndex != -1 && !_advancing) {
-      // A non-queue track appeared. Only treat it as a song-end (and advance) if
-      // the previous track was actually near its end; otherwise the user started
-      // something else in YT Music — stop driving the queue instead of hijacking it.
-      final wasNearEnd = prevDurMs > 0 && prevPosMs >= prevDurMs - 12000;
-      if (wasNearEnd && _yt.currentQueue.length > _currentPlayingIndex + 1) {
+      // A non-queue track appeared while we're driving the queue — either our track
+      // ended (YT Music autoplayed its own next-up) OR an external controller (car /
+      // Bluetooth / notification) skipped inside YT Music. These are INDISTINGUISHABLE
+      // from here: verified on-device (2026-07-09) that YT Music never emits
+      // STATE_SKIPPING_TO_NEXT/PREVIOUS, and the system media-key APIs need the
+      // privileged MEDIA_CONTENT_CONTROL permission we can't hold — so an external
+      // skip looks exactly like a deliberate track change. Per product decision the
+      // queue is authoritative: advance to our next item so an external skip never
+      // "loses" the queue. playAt() re-arms _advancing while YT Music loads the
+      // target, so autoplay flashing non-matching tracks can't skip entries.
+      if (_yt.currentQueue.length > _currentPlayingIndex + 1) {
         _currentPlayingIndex++;
-        debugPrint("Collab Auto-DJ: advancing to index $_currentPlayingIndex");
-        // playAt() re-arms the _advancing guard while YT Music loads the target,
-        // so autoplay flashing several non-matching tracks can't skip entries.
+        debugPrint("Collab Auto-DJ: reasserting queue → index $_currentPlayingIndex");
         playAt(_currentPlayingIndex);
       } else {
-        // End of queue, or an external/mid-track change — deactivate so we don't
-        // hijack playback, and clear the now-stale highlight.
+        // End of queue — nothing to advance to. Release so we don't fight YT Music's
+        // post-queue radio. (Re-arm by tapping a queue row / favorite; hard reset via
+        // Clear Queue / New Session.)
         _currentPlayingIndex = -1;
         _playbackActive = false;
         _persist();
