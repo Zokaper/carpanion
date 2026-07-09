@@ -316,20 +316,27 @@ class CollabService extends ChangeNotifier {
     final prevPosMs = _lastPosMs;
     _lastPosMs = curPosMs;
     final sincePlayMs = DateTime.now().millisecondsSinceEpoch - _lastPlayAtMs;
+    // A sharp backward jump to ~start on the SAME track = YT Music restarting the
+    // current song, i.e. an external PREVIOUS press (our track is the root of YT
+    // Music's radio queue, so "previous" has nothing before it and just restarts).
+    final backwardReset = curPosMs < 2500 && (prevPosMs - curPosMs) > 1200;
     if (_playbackActive &&
         !_advancing &&
-        sincePlayMs > 3500 && // ignore position settling right after our own track change
+        sincePlayMs > 2500 && // ignore position settling right after our own track change
         _currentPlayingIndex >= 0 &&
         _dashboard.currentTrack == _lastTrack && // same track (a restart, not a new song)
-        prevPosMs > 4000 &&
-        curPosMs < 2500) {
-      if (_currentPlayingIndex > 0) {
+        backwardReset) {
+      // Standard media semantics, decided by how far in they were when they pressed
+      // (prevPosMs, the position just before the reset):
+      if (prevPosMs > 4000 || _currentPlayingIndex == 0) {
+        // >4s in (or nothing before it) → "previous" means restart-to-start. YT Music
+        // already reset the track to 0, so just leave it there.
+        debugPrint("Collab: external PREVIOUS → restart current to start");
+      } else {
+        // Near the start → go to the previous queue item.
         _currentPlayingIndex--;
         debugPrint("Collab: external PREVIOUS → index $_currentPlayingIndex");
         playAt(_currentPlayingIndex);
-      } else {
-        // At the first item — nothing before it; YT Music already restarted it. Leave as is.
-        debugPrint("Collab: external PREVIOUS at index 0 → restart current");
       }
       return;
     }
