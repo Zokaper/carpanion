@@ -213,11 +213,11 @@ authenticating to YT Music (the anonymous Innertube client has no user identity)
 
 **Status (verified on the real S25+ 2026-07):** in-app Google login worked first try (smooth, no
 "browser not secure" block); the 4 mix tiles populated immediately on the favorites screen; tapping
-Supermix filled the native queue and played. **⚠️ OPEN BUG (fix next session):** for tracks that
-have a music video, the Supermix queue gets **BOTH the video and the audio ("- Topic") entry** —
-`_playlistPanelTracks` (`next` with `isAudioOnly:true`) returns duplicate renderers per track for
-personalized mixes. Needs a dedup pass (by title+artist, or prefer the `- Topic`/audio videoId and
-drop its video twin) in `_playlistPanelTracks` or `getMixTracks`.
+Supermix filled the native queue and played. **✅ Audio+video duplicate bug FIXED:**
+`_playlistPanelTracks` now dedups by title+artist, keeping the first occurrence in place but
+preferring the audio (`ATV`) videoId over its OMV/UGC video twin (via each renderer's
+`navigationEndpoint…watchEndpointMusicConfig.musicVideoType`). *(Code fix in; still worth an
+on-device re-check that Supermix no longer double-queues.)*
 
 ### Auth — cookie/SAPISIDHASH login (the SimpMusic/ViMusic approach, NOT OAuth device flow)
 - **`lib/ui/ytmusic_login_webview.dart`** — full-screen `webview_flutter` login (was
@@ -368,10 +368,9 @@ button on the QR screen (the only full reset).
 - **Supermix / personalized mixes — DONE in V4** (was the deferred task). Cookie/SAPISIDHASH
   login + `FEmusic_home` → mix grid → native queue is built and **verified on-device** (login
   smooth, tiles populate, Supermix plays). See the "🎧 V4" section above. **Remaining V4 work:**
-  - 🐞 **Audio+video duplicate bug (next up)**: tapping a mix queues BOTH the video and the audio
-    ("- Topic") copy for tracks that have a music video. Dedup in `_playlistPanelTracks` /
-    `getMixTracks` (prefer the audio/`- Topic` videoId, drop its video twin; or de-dup by
-    title+artist). Reproduced on-device via Supermix.
+  - ✅ **Audio+video duplicate bug — FIXED**: `_playlistPanelTracks` dedups by title+artist,
+    preferring the audio (`ATV` `musicVideoType`) videoId over its OMV/UGC video twin. Re-verify
+    on-device that Supermix no longer double-queues.
   - Validate the other 3 tiles (Quick Picks / Discover Mix / …) actually play, and that the
     `fetchHomeTiles` preference-name selection is stable across sessions (tune `prefs` if a mix is
     missing/duplicated). Remove `debugDumpHome()` once parsing is settled.

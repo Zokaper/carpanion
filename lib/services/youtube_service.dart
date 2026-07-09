@@ -581,23 +581,42 @@ class YouTubeService extends ChangeNotifier {
     final next = await _innertubePost('next', {'playlistId': playlistId, 'isAudioOnly': true});
     final renderers = <Map>[];
     _collectByKey(next, 'playlistPanelVideoRenderer', renderers);
+    // Personalized mixes hand back BOTH the music-video and the audio ("- Topic")
+    // renderer for tracks that have a video, so a single mix double-queues them.
+    // Dedup by title+artist, keeping the first occurrence but preferring the
+    // audio (ATV) videoId over its OMV/UGC video twin. musicVideoType: ATV = audio
+    // track, OMV/UGC = a music/user video.
     final tracks = <Map<String, String>>[];
+    final indexByKey = <String, int>{};
     for (final r in renderers) {
       final videoId = r['videoId']?.toString();
       if (videoId == null || videoId.isEmpty) continue;
       final title = _runsText(r['title']);
       final byline = _runsText(r['longBylineText'] ?? r['shortBylineText']);
+      final artist = byline.split('•').first.trim();
+      final videoType = r['navigationEndpoint']?['watchEndpoint']
+          ?['watchEndpointMusicSupportedConfigs']?['watchEndpointMusicConfig']
+          ?['musicVideoType']?.toString() ?? '';
       String thumb = '';
       final thumbs = r['thumbnail']?['thumbnails'];
       if (thumbs is List && thumbs.isNotEmpty) {
         thumb = (thumbs.last['url']?.toString() ?? '').replaceAll(RegExp(r'=w\d+-h\d+'), '=w400-h400');
       }
-      tracks.add({
+      final track = {
         'videoId': videoId,
         'title': title.isNotEmpty ? title : 'Unknown',
-        'artist': byline.split('•').first.trim(),
+        'artist': artist,
         'thumbnail': thumb,
-      });
+      };
+      final key = '${track['title']!.toLowerCase()}|${artist.toLowerCase()}';
+      final existing = indexByKey[key];
+      if (existing == null) {
+        indexByKey[key] = tracks.length;
+        tracks.add(track);
+      } else if (videoType == 'MUSIC_VIDEO_TYPE_ATV') {
+        // Replace the earlier video twin with this audio version (keep position).
+        tracks[existing] = track;
+      }
     }
     return tracks;
   }
