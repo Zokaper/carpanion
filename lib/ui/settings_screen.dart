@@ -559,6 +559,12 @@ class _DisplaySystemSection extends StatelessWidget {
           ),
         ),
         _FeatureCard(
+          title: "Weather chip",
+          subtitle: "Shows current temperature + conditions in the header (Open-Meteo).",
+          value: provider.featWeather,
+          onChanged: (v) => provider.setFeatWeather(v),
+        ),
+        _FeatureCard(
           title: "Adaptive brightness",
           subtitle: "Lets Android adjust screen brightness automatically.",
           value: provider.isAdaptiveBrightness,

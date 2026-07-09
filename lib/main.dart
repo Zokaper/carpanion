@@ -177,6 +177,9 @@ class DashboardProvider with ChangeNotifier {
   int _lastDashcamStartAttempt = 0; // epoch ms; rate-limits auto-restart
   String _speedLimit = '?';
   Position? _lastSpeedLimitPosition;
+  int? _weatherTempC; // rounded °C from Open-Meteo, null until first fetch
+  int? _weatherCode; // WMO weather code
+  int _lastWeatherFetch = 0; // epoch ms; throttles the ~15-min refresh
   double _speed = 0.0;
   double _accuracy = 0.0;
   double _altitude = 0.0;
@@ -193,6 +196,8 @@ class DashboardProvider with ChangeNotifier {
   double get altitude => _altitude;
   double get heading => _heading;
   String get streetName => _streetName;
+  int? get weatherTempC => _weatherTempC;
+  int? get weatherCode => _weatherCode;
   double get mediaPosition => _mediaPosition;
   double get mediaDuration => _mediaDuration;
   Uint8List? get currentAlbumArtBytes => _currentAlbumArtBytes;
@@ -305,6 +310,7 @@ class DashboardProvider with ChangeNotifier {
   // the underlying work. A feature stays ON but dormant if its required
   // permission is missing (consumers check `flag && permissionGranted`).
   bool _featSpeedLimit = true;
+  bool _featWeather = true;
   bool _featSpeedWarning = true;
   bool _featDashcam = true;
   bool _featWelcomeOverlay = true;
@@ -314,6 +320,7 @@ class DashboardProvider with ChangeNotifier {
   int _phoneMode = 1; // 0=Off, 1=In-app only, 2=Full (default dialer)
 
   bool get featSpeedLimit => _featSpeedLimit;
+  bool get featWeather => _featWeather;
   bool get featSpeedWarning => _featSpeedWarning;
   bool get featDashcam => _featDashcam;
   bool get featWelcomeOverlay => _featWelcomeOverlay;
@@ -323,6 +330,7 @@ class DashboardProvider with ChangeNotifier {
   int get phoneMode => _phoneMode;
 
   static const String _kFeatSpeedLimit = 'feat_speed_limit';
+  static const String _kFeatWeather = 'feat_weather';
   static const String _kFeatSpeedWarning = 'feat_speed_warning';
   static const String _kFeatDashcam = 'feat_dashcam';
   static const String _kDashcamDesiredOn = 'dashcam_desired_on';
@@ -336,6 +344,7 @@ class DashboardProvider with ChangeNotifier {
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     _featSpeedLimit = prefs.getBool(_kFeatSpeedLimit) ?? true;
+    _featWeather = prefs.getBool(_kFeatWeather) ?? true;
     _featSpeedWarning = prefs.getBool(_kFeatSpeedWarning) ?? true;
     _featDashcam = prefs.getBool(_kFeatDashcam) ?? true;
     _dashcamDesiredOn = prefs.getBool(_kDashcamDesiredOn) ?? false;
@@ -358,6 +367,13 @@ class DashboardProvider with ChangeNotifier {
     _featSpeedLimit = v;
     notifyListeners();
     await _persistBool(_kFeatSpeedLimit, v);
+  }
+
+  Future<void> setFeatWeather(bool v) async {
+    if (_featWeather == v) return;
+    _featWeather = v;
+    notifyListeners();
+    await _persistBool(_kFeatWeather, v);
   }
 
   Future<void> setFeatSpeedWarning(bool v) async {
@@ -739,7 +755,15 @@ class DashboardProvider with ChangeNotifier {
         _altitude = position.altitude;
         _heading = position.heading;
         notifyListeners();
-        
+
+        // Weather: first fix, then refresh every ~15 min (weather changes slowly,
+        // so it's time-gated only — no distance gate like the speed limit).
+        if (_featWeather &&
+            (_lastWeatherFetch == 0 ||
+                DateTime.now().millisecondsSinceEpoch - _lastWeatherFetch > 15 * 60 * 1000)) {
+          _fetchWeather(position);
+        }
+
         if (_lastSpeedLimitPosition == null ||
             Geolocator.distanceBetween(_lastSpeedLimitPosition!.latitude, _lastSpeedLimitPosition!.longitude, position.latitude, position.longitude) > 200) {
             // Only advance the anchor once we actually kick off a fetch; if one is
@@ -961,6 +985,41 @@ class DashboardProvider with ChangeNotifier {
         debugPrint("Speed limit fetch failed: $e");
      } finally {
         _isFetchingSpeedLimit = false;
+     }
+  }
+
+  bool _isFetchingWeather = false;
+
+  // Glanceable current weather from Open-Meteo (free, no API key). Mirrors the
+  // speed-limit fetch pattern; throttled by the ~15-min time gate at the call site.
+  Future<void> _fetchWeather(Position position) async {
+     if (_isFetchingWeather) return;
+     _isFetchingWeather = true;
+     // Advance the throttle anchor on kick-off so a transient failure waits the
+     // full interval instead of retrying on every position update.
+     _lastWeatherFetch = DateTime.now().millisecondsSinceEpoch;
+     try {
+        final lat = position.latitude;
+        final lon = position.longitude;
+        final url = Uri.parse(
+            'https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,weather_code');
+
+        final response = await http
+            .get(url, headers: {'User-Agent': 'CarDashboardApp/1.0'})
+            .timeout(const Duration(seconds: 5));
+        if (response.statusCode == 200) {
+           final data = jsonDecode(response.body);
+           final current = data['current'];
+           if (current != null && current['temperature_2m'] != null) {
+              _weatherTempC = (current['temperature_2m'] as num).round();
+              _weatherCode = (current['weather_code'] as num?)?.toInt();
+              notifyListeners();
+           }
+        }
+     } catch (e) {
+        debugPrint("Weather fetch failed: $e");
+     } finally {
+        _isFetchingWeather = false;
      }
   }
 
@@ -1539,6 +1598,7 @@ class _ClockWidgetState extends State<ClockWidget> {
       builder: (context, snapshot) {
         final now = snapshot.data ?? DateTime.now();
         return Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Text(
               _formatTime(now),
@@ -1553,12 +1613,19 @@ class _ClockWidgetState extends State<ClockWidget> {
             const SizedBox(width: 10),
             Container(width: 1, height: 12, color: widget.color.withOpacity(0.24)),
             const SizedBox(width: 10),
-            Text(
-              "${_getWeekdayName(now.weekday)}, ${_getMonthName(now.month)} ${now.day}",
-              style: TextStyle(
-                color: widget.color.withOpacity(0.6),
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
+            // Flexible so the date ellipsizes (yields room to the weather chip)
+            // instead of overflowing the header's left column on narrow screens.
+            Flexible(
+              child: Text(
+                "${_getWeekdayName(now.weekday).substring(0, 3)}, ${_getMonthName(now.month)} ${now.day}",
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                softWrap: false,
+                style: TextStyle(
+                  color: widget.color.withOpacity(0.6),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             ),
           ],
@@ -1589,9 +1656,9 @@ class HeaderBarWidget extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Left Column Header (Flex 7): Speed/Clock
+          // Left Column Header (Flex 9): Speed/Clock/Weather
           Expanded(
-            flex: 7,
+            flex: 9,
             child: Row(
               children: [
                 Row(
@@ -1600,15 +1667,31 @@ class HeaderBarWidget extends StatelessWidget {
                     const SizedBox(width: 12),
                   ],
                 ),
-                ClockWidget(color: onSurface),
+                Flexible(child: ClockWidget(color: onSurface)),
+                if (provider.featWeather && provider.weatherTempC != null) ...[
+                  const SizedBox(width: 10),
+                  Container(width: 1, height: 12, color: onSurface.withOpacity(0.24)),
+                  const SizedBox(width: 10),
+                  Icon(_weatherIcon(provider.weatherCode), color: onSurface, size: 16),
+                  const SizedBox(width: 4),
+                  Text(
+                    "${provider.weatherTempC}°",
+                    style: TextStyle(
+                      color: onSurface,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
           const SizedBox(width: 14),
-          
-          // Center Column Header (Flex 8): Settings
+
+          // Center Column Header (Flex 6): Settings
           Expanded(
-            flex: 8,
+            flex: 6,
             child: Row(
               mainAxisSize: MainAxisSize.max,
               mainAxisAlignment: MainAxisAlignment.end,
@@ -1719,6 +1802,22 @@ class HeaderBarWidget extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  // Map a WMO weather code (Open-Meteo) to a Material icon.
+  // https://open-meteo.com/en/docs → WMO Weather interpretation codes.
+  IconData _weatherIcon(int? code) {
+    if (code == null) return Icons.thermostat;
+    if (code == 0) return Icons.wb_sunny; // clear
+    if (code <= 2) return Icons.wb_cloudy; // mainly clear / partly cloudy
+    if (code == 3) return Icons.cloud; // overcast
+    if (code <= 48) return Icons.foggy; // fog
+    if (code <= 57) return Icons.grain; // drizzle
+    if (code <= 67) return Icons.umbrella; // rain
+    if (code <= 77) return Icons.ac_unit; // snow
+    if (code <= 82) return Icons.umbrella; // rain showers
+    if (code <= 86) return Icons.ac_unit; // snow showers
+    return Icons.flash_on; // thunderstorm (95-99)
   }
 }
 
