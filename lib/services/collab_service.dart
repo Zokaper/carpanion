@@ -45,6 +45,14 @@ class CollabService extends ChangeNotifier {
   // Tracked to detect changes coming from DashboardProvider notifications.
   String _lastTrack = '';
   bool _lastPlaying = false;
+  // Previous poll's media position (ms). A sharp backward jump on the SAME track
+  // is our signal for an external PREVIOUS press (see _onDashboardUpdate).
+  double _lastPosMs = 0;
+  // When we last issued a playAt (epoch ms). For a short window after, native
+  // position readings are still settling from the previous track (old high value →
+  // new ~0), which would masquerade as a backward jump — so PREVIOUS detection is
+  // suppressed during it.
+  int _lastPlayAtMs = 0;
 
   // True while an Auto-DJ advance is in flight (target track still loading in YT
   // Music), to prevent double-advancing past queue entries.
@@ -295,6 +303,37 @@ class CollabService extends ChangeNotifier {
     // unchanged-track early-return below.
     _scheduleEndAdvance();
 
+    // Detect an external PREVIOUS press (car / Bluetooth / notification) and turn it
+    // into "go back one" in OUR queue. Because we play each queue item as the root of
+    // YT Music's radio queue (index 0), a PREVIOUS press has nothing "before" it, so
+    // YT Music just RESTARTS the current track: the title stays the same while the
+    // position jumps back to ~0. Verified on-device (2026-07-09). That backward jump
+    // on the still-current track — which we didn't command (guarded by _advancing) —
+    // is our unambiguous PREVIOUS signal (NEXT, by contrast, produces a *foreign*
+    // track; see below). This must run before the unchanged-track early-return since a
+    // restart keeps the same title.
+    final curPosMs = _dashboard.mediaPosition;
+    final prevPosMs = _lastPosMs;
+    _lastPosMs = curPosMs;
+    final sincePlayMs = DateTime.now().millisecondsSinceEpoch - _lastPlayAtMs;
+    if (_playbackActive &&
+        !_advancing &&
+        sincePlayMs > 3500 && // ignore position settling right after our own track change
+        _currentPlayingIndex >= 0 &&
+        _dashboard.currentTrack == _lastTrack && // same track (a restart, not a new song)
+        prevPosMs > 4000 &&
+        curPosMs < 2500) {
+      if (_currentPlayingIndex > 0) {
+        _currentPlayingIndex--;
+        debugPrint("Collab: external PREVIOUS → index $_currentPlayingIndex");
+        playAt(_currentPlayingIndex);
+      } else {
+        // At the first item — nothing before it; YT Music already restarted it. Leave as is.
+        debugPrint("Collab: external PREVIOUS at index 0 → restart current");
+      }
+      return;
+    }
+
     if (_dashboard.currentTrack == _lastTrack) return;
     _lastTrack = _dashboard.currentTrack;
     _socket?.emit('update_playing_status', _lastTrack);
@@ -311,16 +350,14 @@ class CollabService extends ChangeNotifier {
         _persist();
       }
     } else if (_playbackActive && _currentPlayingIndex != -1 && !_advancing) {
-      // A non-queue track appeared while we're driving the queue — either our track
-      // ended (YT Music autoplayed its own next-up) OR an external controller (car /
-      // Bluetooth / notification) skipped inside YT Music. These are INDISTINGUISHABLE
-      // from here: verified on-device (2026-07-09) that YT Music never emits
-      // STATE_SKIPPING_TO_NEXT/PREVIOUS, and the system media-key APIs need the
-      // privileged MEDIA_CONTENT_CONTROL permission we can't hold — so an external
-      // skip looks exactly like a deliberate track change. Per product decision the
-      // queue is authoritative: advance to our next item so an external skip never
-      // "loses" the queue. playAt() re-arms _advancing while YT Music loads the
-      // target, so autoplay flashing non-matching tracks can't skip entries.
+      // A FOREIGN track appeared while we're driving the queue: either our track ended
+      // (YT Music autoplayed its own next-up) or an external NEXT (car / Bluetooth /
+      // notification) — both surface as "a non-queue track is now playing" and both
+      // mean "move the queue forward". (An external PREVIOUS is caught earlier as a
+      // same-track restart, so it does NOT reach here.) The queue is authoritative:
+      // advance to our next item so an external NEXT / song-end never "loses" it.
+      // playAt() re-arms _advancing while YT Music loads the target, so autoplay
+      // flashing non-matching tracks can't skip entries.
       if (_yt.currentQueue.length > _currentPlayingIndex + 1) {
         _currentPlayingIndex++;
         debugPrint("Collab Auto-DJ: reasserting queue → index $_currentPlayingIndex");
@@ -510,6 +547,7 @@ class CollabService extends ChangeNotifier {
     if (index < 0 || index >= _yt.currentQueue.length) return;
     _currentPlayingIndex = index;
     _playbackActive = true;
+    _lastPlayAtMs = DateTime.now().millisecondsSinceEpoch; // suppress PREVIOUS mis-detect while position settles
     // Guard Auto-DJ from advancing off this track until YT Music actually loads
     // it. Right after a deliberate play the native metadata still reports the
     // PREVIOUS song (which isn't in the new queue), and without this the Auto-DJ
