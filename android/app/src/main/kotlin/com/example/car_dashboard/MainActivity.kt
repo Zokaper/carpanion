@@ -251,6 +251,15 @@ class MainActivity : FlutterActivity() {
                             val artist = md?.getString(MediaMetadata.METADATA_KEY_ARTIST)
                                 ?: md?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) ?: ""
                             val album = md?.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: ""
+                            // TEMP RECON (Feature C): dump every id-ish field so we can tell
+                            // whether any reliably carries the current track's videoId
+                            // (especially for tracks YT Music autoplayed). Remove once decided.
+                            android.util.Log.d("MediaRecon",
+                                "title=$title" +
+                                " | MEDIA_ID=${md?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)}" +
+                                " | desc.mediaId=${md?.description?.mediaId}" +
+                                " | desc.mediaUri=${md?.description?.mediaUri}" +
+                                " | activeQueueItemId=${controller.playbackState?.activeQueueItemId}")
                             result.success(mapOf(
                                 "title" to title,
                                 "artist" to artist,

@@ -102,6 +102,18 @@ class DashcamListenerService : NotificationListenerService() {
             if (isOngoing) {
                 isNavigating = true
             }
+            // TEMP RECON (Feature B): dump the Maps ongoing notification extras so we can
+            // confirm Maps still posts while projecting to Android Auto and see which
+            // fields carry ETA vs remaining distance. Remove once parsing is settled.
+            val ex = sbn.notification.extras
+            android.util.Log.d("NavRecon",
+                "ongoing=$isOngoing" +
+                " | TITLE=${ex.getCharSequence(Notification.EXTRA_TITLE)}" +
+                " | TEXT=${ex.getCharSequence(Notification.EXTRA_TEXT)}" +
+                " | SUB_TEXT=${ex.getCharSequence(Notification.EXTRA_SUB_TEXT)}" +
+                " | SUMMARY=${ex.getCharSequence(Notification.EXTRA_SUMMARY_TEXT)}" +
+                " | INFO=${ex.getCharSequence(Notification.EXTRA_INFO_TEXT)}" +
+                " | LINES=${ex.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.joinToString(" // ")}")
         }
     }
 
