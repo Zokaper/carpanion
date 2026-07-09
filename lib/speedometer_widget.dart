@@ -141,6 +141,8 @@ class SpeedometerWidget extends StatelessWidget {
                 children: [
                   _buildMetricItem(Icons.height, "${provider.altitude.toStringAsFixed(0)} M", onSurface),
                   _buildMetricItem(Icons.explore, _getHeadingString(provider.heading), onSurface),
+                  if (provider.featDashcam)
+                    _buildDashcamToggle(context, provider, onSurface),
                 ],
               ),
               const SizedBox(height: 8),
@@ -179,46 +181,6 @@ class SpeedometerWidget extends StatelessWidget {
                   ),
                 ),
                 const Spacer(),
-                if (provider.dashcamRecording)
-                   GestureDetector(
-                     onTap: () {
-                       showDialog(
-                         context: context,
-                         builder: (context) => AlertDialog(
-                           backgroundColor: Theme.of(context).colorScheme.surface,
-                           title: const Text('Stop Recording?', style: TextStyle(fontWeight: FontWeight.bold)),
-                           content: const Text('Are you sure you want to stop the dashcam recording?'),
-                           actions: [
-                             TextButton(
-                               onPressed: () => Navigator.pop(context),
-                               child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.bold)),
-                             ),
-                             TextButton(
-                               onPressed: () {
-                                 provider.stopDashcam();
-                                 Navigator.pop(context);
-                               },
-                               child: const Text('Stop', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
-                             ),
-                           ],
-                         ),
-                       );
-                     },
-                     child: Row(
-                       children: [
-                         Container(
-                           width: 8, height: 8,
-                           decoration: const BoxDecoration(
-                             color: Colors.red,
-                             shape: BoxShape.circle,
-                           ),
-                         ),
-                         const SizedBox(width: 4),
-                         const Text("REC", style: TextStyle(color: Colors.red, fontSize: 10, fontWeight: FontWeight.bold)),
-                         const SizedBox(width: 12),
-                       ],
-                     ),
-                   ),
                 if (provider.hasLocationPermission)
                   _buildGpsSignalIndicator(provider.accuracy, onSurface)
                 else
@@ -269,6 +231,53 @@ class SpeedometerWidget extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+
+  // Dashcam toggle, styled to sit inline with the altitude/heading metrics.
+  // Off: muted camera-off icon. Armed (desired on, not yet recording): theme
+  // blue dot. Live (recording confirmed): red dot. Tap toggles the intent.
+  Widget _buildDashcamToggle(BuildContext context, dynamic provider, Color onSurface) {
+    final on = provider.dashcamDesiredOn as bool;
+    final live = provider.dashcamRecording as bool;
+    if (!on) {
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => provider.setDashcamDesiredOn(true),
+        child: Row(
+          children: [
+            Icon(Icons.videocam_off_outlined, color: onSurface.withOpacity(0.3), size: 14),
+            const SizedBox(width: 4),
+            Text(
+              "REC",
+              style: TextStyle(
+                color: onSurface.withOpacity(0.5),
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    final color = live ? Colors.red : Theme.of(context).colorScheme.primary;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => provider.setDashcamDesiredOn(false),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 5),
+          Text(
+            "REC",
+            style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.bold),
+          ),
+        ],
+      ),
     );
   }
 

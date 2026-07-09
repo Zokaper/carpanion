@@ -67,7 +67,9 @@ class _WelcomeOverlayWidgetState extends State<WelcomeOverlayWidget> {
 
     if (provider.featDashcam && (_startDashcamDefault || _startDashcam)) {
       try {
-        await platform.invokeMethod('startDashcam');
+        // Turn on the *persistent* dashcam (single source of truth); the poll
+        // then keeps it recording and the speedometer toggle reflects it.
+        await provider.setDashcamDesiredOn(true);
         await Future.delayed(const Duration(milliseconds: 1000)); // give dashcam time to start
       } catch (e) {
         debugPrint("Dashcam launch failed: $e");

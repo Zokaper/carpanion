@@ -170,6 +170,11 @@ class DashboardProvider with ChangeNotifier {
   bool _hasPhonePermissions = false;
   
   bool _dashcamRecording = false;
+  // User intent: "keep the dashcam recording". Persisted, separate from the
+  // actual recording state (`_dashcamRecording`, derived from the notification).
+  // When on, the dashcam poll re-starts recording if it sees it has dropped.
+  bool _dashcamDesiredOn = false;
+  int _lastDashcamStartAttempt = 0; // epoch ms; rate-limits auto-restart
   String _speedLimit = '?';
   Position? _lastSpeedLimitPosition;
   double _speed = 0.0;
@@ -266,6 +271,7 @@ class DashboardProvider with ChangeNotifier {
   }
   
   bool get dashcamRecording => _dashcamRecording;
+  bool get dashcamDesiredOn => _dashcamDesiredOn;
   String get speedLimit => _speedLimit;
   bool get isDemoMode => _isDemoMode;
   bool get isPlaying => _isPlaying;
@@ -319,6 +325,7 @@ class DashboardProvider with ChangeNotifier {
   static const String _kFeatSpeedLimit = 'feat_speed_limit';
   static const String _kFeatSpeedWarning = 'feat_speed_warning';
   static const String _kFeatDashcam = 'feat_dashcam';
+  static const String _kDashcamDesiredOn = 'dashcam_desired_on';
   static const String _kFeatWelcomeOverlay = 'feat_welcome_overlay';
   static const String _kFeatMapsAutolaunch = 'feat_maps_autolaunch';
   static const String _kFeatNotifications = 'feat_notifications';
@@ -331,6 +338,7 @@ class DashboardProvider with ChangeNotifier {
     _featSpeedLimit = prefs.getBool(_kFeatSpeedLimit) ?? true;
     _featSpeedWarning = prefs.getBool(_kFeatSpeedWarning) ?? true;
     _featDashcam = prefs.getBool(_kFeatDashcam) ?? true;
+    _dashcamDesiredOn = prefs.getBool(_kDashcamDesiredOn) ?? false;
     _featWelcomeOverlay = prefs.getBool(_kFeatWelcomeOverlay) ?? true;
     _featMapsAutolaunch = prefs.getBool(_kFeatMapsAutolaunch) ?? true;
     _featNotifications = prefs.getBool(_kFeatNotifications) ?? true;
@@ -760,6 +768,20 @@ class DashboardProvider with ChangeNotifier {
            _dashcamRecording = isRecording;
            notifyListeners();
         }
+        // Maintainer: if the user wants the dashcam on but it isn't recording,
+        // re-issue the start (rate-limited so we don't spam START_RECORDING
+        // every 2s while the dashcam app is spinning up).
+        if (_featDashcam && _dashcamDesiredOn && isRecording == false) {
+          final now = DateTime.now().millisecondsSinceEpoch;
+          if (now - _lastDashcamStartAttempt >= 8000) {
+            _lastDashcamStartAttempt = now;
+            try {
+              await platform.invokeMethod('startDashcam');
+            } catch (e) {
+              debugPrint("Dashcam auto-restart failed: $e");
+            }
+          }
+        }
       } catch (e) {
         debugPrint("Dashcam polling error: $e");
       } finally {
@@ -777,6 +799,15 @@ class DashboardProvider with ChangeNotifier {
     }
   }
 
+  Future<void> startDashcam() async {
+    try {
+      _lastDashcamStartAttempt = DateTime.now().millisecondsSinceEpoch;
+      await platform.invokeMethod('startDashcam');
+    } catch (e) {
+      debugPrint("Start dashcam failed: $e");
+    }
+  }
+
   Future<void> stopDashcam() async {
     try {
       await platform.invokeMethod('stopDashcam');
@@ -784,6 +815,26 @@ class DashboardProvider with ChangeNotifier {
       notifyListeners();
     } catch (e) {
       debugPrint("Stop dashcam failed: $e");
+    }
+  }
+
+  /// Persisted user intent for the dashcam. Turning on starts recording and the
+  /// poll keeps it alive; turning off stops it immediately (no confirmation).
+  Future<void> setDashcamDesiredOn(bool v) async {
+    if (_dashcamDesiredOn != v) {
+      _dashcamDesiredOn = v;
+      notifyListeners();
+      await _persistBool(_kDashcamDesiredOn, v);
+    }
+    if (v) {
+      // Reset the cooldown so the first start fires now, then let the poll maintain it.
+      _lastDashcamStartAttempt = 0;
+      if (_featDashcam) {
+        if (_dashcamTimer == null) _startDashcamPolling();
+        await startDashcam();
+      }
+    } else {
+      await stopDashcam();
     }
   }
 
