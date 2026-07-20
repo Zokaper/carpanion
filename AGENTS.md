@@ -106,7 +106,7 @@ Three cooperating layers:
 
 ---
 
-## 🎵 The Core Idea: one native "Now Playing Queue"
+## 🎵 The Core Idea: two queue sources, one now-playing panel (V4.5 pivot)
 
 The pivotal capability: we can drive YouTube Music **without flashing it to the
 foreground** by sending commands to its MediaSession. Native handler
@@ -114,41 +114,92 @@ foreground** by sending commands to its MediaSession. Native handler
 with `https://music.youtube.com/watch?v=<videoId>` — confirmed to play silently in the
 background (`playFromSearch` is silently ignored by YT Music, so we always use URI).
 
-On top of that we built a **single app-managed queue** — the app owns the list, plays it
-one track at a time via `playFromMediaSession`, and auto-advances. YT Music is just the
-audio backend. This queue powers **both** Collab (passenger adds) and **Favorites**
-(albums/artists/songs). Everything funnels through **`CollabService`**.
+**V4 built a single app-managed queue** — the app owned the list, played it one track at a
+time via `playFromMediaSession`, and auto-advanced, inferring external (car-button) skips
+by polling/observing YT Music's session. On-device testing in V4.5 found a structural
+ceiling: on every external NEXT, the app's own "reassert" logic still fired a *second*,
+app-issued transition right after YT Music's native skip — a double-transition race, not a
+tuning problem. A follow-up attempt to own a **second `MediaSession`** to intercept car
+buttons directly made it worse (destabilized YT Music's own session, runaway queue-cycling
+bug) — that code was fully removed; **do not reintroduce a second active `MediaSession`**
+(see the VERDICT comment in `MainActivity.kt`).
+
+**V4.5 pivoted**: confirmed via `javap` on `android.jar` that
+`android.media.session.MediaController` has **no queue-mutation method** (`addQueueItem`
+doesn't exist on the framework class — only read methods `getQueue()`/`getQueueTitle()`).
+That settles the split — passenger/collab add-to-queue needs a real app-owned list, so it
+can't go fully passive, but dynamic playlists (which never need mid-queue insertion) can.
+There are now **two queue sources**, tracked by `CollabService.QueueSource
+{collab, native}`:
+
+- **`QueueSource.collab`** — the original app-managed queue (Collab passenger adds +
+  Favorites song/album), unchanged in spirit from V4.
+- **`QueueSource.native`** — a **passive mirror** of YT Music's own queue, used for
+  Supermix/mixes and artist radio. The app sends exactly one command to trigger the mix in
+  YT Music (`playNativeMix`, `MainActivity.kt`: builds a `watch?v=<videoId>&list=<mixId>`
+  URI and calls `transportControls.playFromUri`, same "no UI flash" trick as single-track
+  playback), then **only reads** — no reassert, no index tracking, no inference. Car/BT
+  buttons already reach YT Music's real session directly, so once the app stops issuing
+  competing commands there's nothing left to race.
+
+### Native queue push (`media_events` EventChannel)
+`MainActivity.kt`'s `pushMediaEvent()` (debounced 200ms, to avoid exposing YT Music's
+mid-transition state as a false signal) includes YT Music's live `controller.queue` —
+each item's `title`/`subtitle`/`iconUri`/`queueId` — plus `activeQueueItemId` from
+`PlaybackState`. `DashboardProvider` (`main.dart`) parses this in
+`_startMediaEventListener`: dedups by `queueId` (YT Music occasionally reports the active
+item twice in a transient snapshot), and on a **real active-item transition** (not every
+same-track reshuffle) archives the item that just left the live queue into
+`_nativeQueueHistory` (capped at 100) so scrolling up in the queue tab still shows what
+already played — the raw native `getQueue()` has no memory of its own.
+Native transport passthroughs: `nativeSkipNext/Previous/TogglePlayPause` (thin
+`transportControls` calls) and `nativeSkipToQueueItem` (`transportControls.skipToQueueItem`,
+used when tapping a row in the mirrored list).
 
 ### `CollabService` (`lib/services/collab_service.dart`) — the playback engine
 App-lifetime service (survives navigation; the collab/queue tab is a thin view over it).
-- **Queue** lives in `YouTubeService.currentQueue` (a `List<Map>` of `{id, videoId,
+- **Collab queue** lives in `YouTubeService.currentQueue` (a `List<Map>` of `{id, videoId,
   originalVideoId, title, artist, thumbnail}`), persisted to `SharedPreferences`
   (`collab_queue`).
 - **`playAt(index)`** → sets `_currentPlayingIndex`, `_playbackActive = true`, invokes
   `playFromMediaSession`; falls back to a launch intent if the MediaSession is unreachable.
-- **Auto-DJ** (`_onDashboardUpdate`, listens to `DashboardProvider`): when the playing
-  track (from native polling) leaves the queue (song ended → YT autoplay), it advances to
-  the next queue item. **Gated on `_playbackActive`, NOT on collab being enabled** — so
-  favorites playback auto-advances even with Collab off. It also re-syncs the highlighted
-  index by fuzzy title-match and emits `update_playing_status` / `update_play_state`.
-- **Favorites entry points**: `playFavoriteSong({videoId,title,artist,thumbnail})` and
-  `loadQueueAndPlay(List<songs>)` — both **replace** the queue and play from 0.
+- **`playNativeMix({listId, videoId})`** → sets `_queueSource = QueueSource.native`,
+  disables collab sharing, clears native queue history, calls the native `playNativeMix`
+  channel method; falls back to `_playViaIntent` (launch-intent URL, now `listId`-aware) if
+  YT Music's session isn't reachable yet (cold-start case — this was the "Supermix button
+  stopped working" bug).
+- **Auto-DJ** (`_onDashboardUpdate`, listens to `DashboardProvider`, **collab-queue path
+  only**): when the playing track (from native polling) leaves the queue (song ended → YT
+  autoplay), it advances to the next queue item. **Gated on `_playbackActive`, NOT on
+  collab being enabled** — so favorites playback auto-advances even with Collab off. Also
+  re-syncs the highlighted index by fuzzy title-match and emits `update_playing_status` /
+  `update_play_state`.
+- **Favorites entry points**: `playFavoriteSong({videoId,title,artist,thumbnail})` (collab
+  queue) and `loadQueueAndPlay(List<songs>)` (collab queue, still used for album favorites)
+  — both **replace** the queue and play from 0. Mixes/artist-radio go through
+  `playNativeMix` instead (native queue).
 - **Persistence** (`SharedPreferences`): `collab_session_id`, `collab_enabled`,
-  `collab_index`. On restart it does a **silent restore**: re-selects the saved song
-  (matching what YT Music is already playing) but does NOT replay it (would restart the
-  song at 0:00); resumes Auto-DJ if a match is found.
-- **Media controls**: `next()`/`previous()` (queue-aware, else native prev/next).
+  `collab_index`, `_queueSourceKey`. On restart it does a **silent restore**: re-selects
+  the saved song (matching what YT Music is already playing) but does NOT replay it (would
+  restart the song at 0:00); resumes Auto-DJ if a match is found (collab-queue path).
+- **Media controls**: `next()`/`previous()`/`togglePlayPause()` branch on `_queueSource` —
+  native calls the `nativeNext/Previous/TogglePlayPause` passthroughs, collab uses the
+  queue-aware logic (else native prev/next as a fallback).
 
 ### Sharing-layer Collab model (IMPORTANT semantics)
-There is ONE queue. **`_enabled` = "passenger sharing is open", NOT playback.**
+There is ONE collab queue (separate from the native mirror). **`_enabled` = "passenger
+sharing is open", NOT playback.**
 - Toggling Collab ON/OFF **never** starts, stops, or clears playback — flip it mid-album
-  and the music is untouched. Enabling just opens the door for passengers.
+  and the music is untouched. Enabling just opens the door for passengers. Turning collab
+  ON also calls `switchToCollab()` (source = collab); turning it OFF calls
+  `switchToNative()` (source = native) — in the queue tab this one toggle now doubles as
+  the queue-source switch (see below).
 - Passenger **write** actions (`passenger_*` socket handlers) are gated on `_enabled`
   (and the per-permission toggles `_allowEditing` / `_allowMediaControl`).
-- Playback starts from: a favorite (song/album/artist), tap-to-play a queue row, or a
+- Playback starts from: a favorite (song/album/artist/mix), tap-to-play a queue row, or a
   passenger add to an idle queue (`_maybeAutoStart`). **Enabling Collab does NOT auto-play.**
 - `newSession()` (the only full reset: new session id + clear queue) and `clearQueue()`
-  (empties queue, keeps session) both reset `_playbackActive`/index.
+  (empties queue, keeps session) both reset `_playbackActive`/index (collab-queue path).
 
 ---
 
@@ -171,10 +222,17 @@ There is ONE queue. **`_enabled` = "passenger sharing is open", NOT playback.**
     the source of the PWA's search results (replaced iTunes, which ranked badly).
   - **`getAlbumTracks(album, artist)`** — `search` → find `MPRE…` album browseId →
     `browse` → collect `musicResponsiveListItemRenderer` tracks (fills missing artist/
-    thumbnail from album context).
-  - **`getArtistRadioTracks(artist)`** — `search` → `UC…` artist browseId → `browse` →
-    find an `RD…` radio playlistId → `next` → parse `playlistPanelVideoRenderer`. Gives
-    YT Music's own popularity-weighted shuffle order.
+    thumbnail from album context). **V4.5:** now only a fallback — album favorites
+    prefer **`getAlbumPlaylistId(album, artist)`**, which resolves the same album's
+    own watch-playlist id (`OLAK5uy…`/`VL…`) for native triggering via
+    `CollabService.playNativeMix` (see "🎵 Core Idea" above).
+  - **`getArtistRadioPlaylistId(artist)`** (V4.5, replaced `getArtistRadioTracks`) —
+    `search` → `UC…` artist browseId → `browse` → find and return an `RD…` radio
+    playlistId only. Track expansion is no longer done in-app for radio — the id is handed
+    to `CollabService.playNativeMix`, which triggers it natively so YT Music builds the
+    queue itself (see "🎵 Core Idea" above). `_playlistPanelTracks` (the old Innertube
+    `next` + `playlistPanelVideoRenderer` expander) and its dedup/near-miss logging were
+    removed as dead code for this path.
   - Generic recursive JSON walkers: `_findBrowseId`, `_findRadioPlaylistId`,
     `_findFirstThumbnail`, `_collectByKey`, `_runsText`; shared POST via `_innertubePost`.
   - **All fetchers return `[]` on failure** so callers fall back to the legacy YT Music
@@ -252,9 +310,10 @@ on-device re-check that Supermix no longer double-queues.)*
   song shelf → a `songs` tile). Selects a **stable set of 4** via `prefs = ['supermix','quick picks',
   'discover mix','new release mix','my mix','listen again']` (Supermix pinned first via `contains`),
   filling remaining slots in feed order. `[]`/keeps prior tiles on failure.
-- **`getMixTracks(tile)`** — `tile.songs` if present, else `_playlistPanelTracks(pid)` (strips a
-  `VL` prefix). **`_playlistPanelTracks(playlistId)`** was extracted from `getArtistRadioTracks`
-  (`next` + `isAudioOnly:true` → `playlistPanelVideoRenderer` → tracks) — shared by radio + mixes.
+- **`getMixTracks(tile)`** (V4.5, simplified) — now just `tile.songs ?? []`; only still used for
+  Quick Picks tiles, which come pre-supplied with songs. Mix tiles with a `playlistId` (Supermix,
+  Discover Mix, …) instead go through `CollabService.playNativeMix(listId: tile.playlistId)` —
+  triggered natively in YT Music, no in-app track expansion (see "🎵 Core Idea" above).
 - **`debugDumpHome()`** — TEMP Phase-1 validation hook (logs `FEmusic_home` shelves/cards). Can be
   removed once parsing is settled.
 
@@ -263,7 +322,8 @@ on-device re-check that Supermix no longer double-queues.)*
   (`GridView.count` of `_MixTile`s) then the favorites list in an `Expanded` below. Logged out → a
   single **"Connect YouTube Music"** button (pushes the login WebView → `setYtmAuth` +
   `fetchHomeTiles`); logged in + empty → skeletons + one-shot `fetchHomeTiles()`; tap a tile →
-  snackbar → `getMixTracks` → `collab.loadQueueAndPlay` → `_goToQueueView()`.
+  snackbar → `collab.playNativeMix(listId: tile.playlistId)` (or `loadQueueAndPlay(getMixTracks(tile))`
+  for a Quick Picks songs-tile) → `_goToQueueView()`.
 - **Settings → Media & Collab**: `_YtMusicAccountCard` ("YouTube Music (personalized mixes)"),
   CONNECT pushes the WebView, DISCONNECT `clearYtmAuth`.
 - **Deps added**: `webview_flutter`, `flutter_secure_storage`, `crypto`.
@@ -345,7 +405,13 @@ is pass-through, no caching). Key socket events:
 The collab/queue view is `lib/ui/queue_tab.dart` — a thin view over `CollabService`:
 default = queue list (QR never auto-shows; reachable via the QR icon), a highlighted
 **COLLAB ON/OFF** toggle (= sharing), permission toggles, Clear Queue, and a **New Session**
-button on the QR screen (the only full reset).
+button on the QR screen (the only full reset). **V4.5:** that same COLLAB toggle now also
+switches `QueueSource` — ON shows/uses the collab queue, OFF shows/uses the native YT Music
+mirror (`_buildNativeQueueList` + `_nativeThumbnail`, rendering `iconUri` album art); a
+dedicated NATIVE/COLLAB pill chip was tried and dropped (caused a pixel overflow) in favor of
+folding it into this toggle. The "QUEUE" badge next to the now-playing album art shows
+NATIVE/COLLAB dynamically to make the active source clear at a glance. Tapping a row in either
+list, or a track auto-advancing, calls `_followNowPlaying()` to recenter the scroll position.
 
 ---
 
@@ -374,18 +440,25 @@ button on the QR screen (the only full reset).
 ## 🚧 Known risks & next steps
 - **Album/artist Innertube parsing** needs on-device validation against real responses
   (see the warning above). Falls back to YT Music launch on failure.
-- **Supermix / personalized mixes — DONE in V4** (was the deferred task). Cookie/SAPISIDHASH
-  login + `FEmusic_home` → mix grid → native queue is built and **verified on-device** (login
-  smooth, tiles populate, Supermix plays). See the "🎧 V4" section above. **Remaining V4 work:**
-  - ✅ **Audio+video duplicate bug — FIXED**: `_playlistPanelTracks` dedups by title+artist,
-    preferring the audio (`ATV` `musicVideoType`) videoId over its OMV/UGC video twin. Re-verify
-    on-device that Supermix no longer double-queues.
+- **Supermix / personalized mixes — DONE in V4, re-architected in V4.5.** Cookie/SAPISIDHASH
+  login + `FEmusic_home` → mix grid is unchanged and verified on-device. Playback now goes
+  through the native-mirror pivot (`playNativeMix`, see "🎵 Core Idea") instead of an in-app
+  pre-fetched queue — this obsoletes the old MV/audio dedup concern for mixes/radio (YT Music
+  itself owns the queue, no in-app dedup needed) and fixes the earlier staleness complaint (the
+  mirror always reflects YT Music's live queue, including its own dynamic reshuffles).
   - Validate the other 3 tiles (Quick Picks / Discover Mix / …) actually play, and that the
     `fetchHomeTiles` preference-name selection is stable across sessions (tune `prefs` if a mix is
     missing/duplicated). Remove `debugDumpHome()` once parsing is settled.
   - Confirm cookie-expiry behavior (401/403 → auto `clearYtmAuth` → grid flips to "Connect").
-- **Playing highlight** uses fuzzy title-matching (native track title vs stored queue
-  title) — unusual titles can occasionally mis-highlight.
+  - Album favorites now also use the native mirror: `getAlbumPlaylistId` resolves the album's
+    own watch-playlist id (`OLAK5uy…`/`VL…`) and `playNativeMix` triggers it, same as
+    mixes/radio. Falls back to the old `getAlbumTracks` → `loadQueueAndPlay` (collab queue) if
+    no playlist id is found. Left on the collab queue on purpose (no native list to trigger):
+    artist "own songs" mode (`getArtistTracks`, our own weighted shuffle) and Quick Picks (a
+    curated song shelf, not a playlist id).
+- **Playing highlight**: the collab-queue path still uses fuzzy title-matching (native track
+  title vs stored queue title) — unusual titles can occasionally mis-highlight. The native-mirror
+  path doesn't have this problem — it matches exactly on `activeQueueItemId` from YT Music.
 - Passenger edit/media **permissions reset to off on app restart** (safe default; not persisted).
 - **Feature flags on the emulator**: `feat_*` toggles gate real work, but audio/MediaSession-backed
   behavior (dashcam REC, now-playing) can't be exercised without the phone. Validate the flag's

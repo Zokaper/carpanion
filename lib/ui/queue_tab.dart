@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import '../main.dart';
 import '../services/youtube_service.dart';
 import '../services/collab_service.dart';
 
@@ -33,6 +34,14 @@ class _QueueTabState extends State<QueueTab> {
     super.dispose();
   }
 
+  /// Re-arms auto-centering (used right before a deliberate tap-to-play, so
+  /// the list follows the new selection even if the user had scrolled away
+  /// browsing beforehand) — same reset the "recenter" FAB uses.
+  void _followNowPlaying() {
+    if (_userScrolled) setState(() => _userScrolled = false);
+    _lastScrolledIndex = -1;
+  }
+
   void _maybeAutoScroll(int playingIndex) {
     if (playingIndex == _lastScrolledIndex) return;
     _lastScrolledIndex = playingIndex;
@@ -57,43 +66,66 @@ class _QueueTabState extends State<QueueTab> {
   Widget build(BuildContext context) {
     final ytService = context.watch<YouTubeService>();
     final collab = context.watch<CollabService>();
+    final dashboard = context.watch<DashboardProvider>();
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
+    final isNative = collab.queueSource == QueueSource.native;
 
     // No sign-in gate: Collab (default YT Music search + queue/playback/favorites)
     // is fully anonymous. Google sign-in is optional and only powers the "search
     // YouTube for demos" toggle — surfaced in Settings, not as a wall here.
-    final playingIndex = collab.currentPlayingIndex;
+    // Native mode: YT Music's getQueue() only reports current+upcoming, so
+    // already-played tracks are prepended from our own history log (see
+    // DashboardProvider.nativeQueueHistory) — otherwise they'd vanish from
+    // the list the moment they finish.
+    final nativeCombined = isNative ? [...dashboard.nativeQueueHistory, ...dashboard.nativeQueue] : const <Map<String, String>>[];
+    final playingIndex = isNative
+        ? nativeCombined.indexWhere((q) => q['queueId'] == dashboard.nativeActiveQueueItemId.toString())
+        : collab.currentPlayingIndex;
     _maybeAutoScroll(playingIndex);
 
     return Padding(
       padding: const EdgeInsets.only(top: 4.0),
       child: Column(
         children: [
-          _buildHeader(collab, ytService, theme, onSurface),
+          _buildHeader(collab, ytService, theme, onSurface, isNative),
           const SizedBox(height: 8),
           Expanded(
             child: _showQrCodeOverlay
                 ? _buildQrScreen(collab, theme, onSurface)
-                : _buildQueueList(collab, ytService, theme, onSurface, playingIndex),
+                : isNative
+                    ? _buildNativeQueueList(collab, nativeCombined, theme, onSurface, playingIndex)
+                    : _buildQueueList(collab, ytService, theme, onSurface, playingIndex),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildHeader(CollabService collab, YouTubeService ytService, ThemeData theme, Color onSurface) {
+  Widget _buildHeader(CollabService collab, YouTubeService ytService, ThemeData theme, Color onSurface, bool isNative) {
     final collabOn = collab.enabled;
-    // A single horizontal row of icon buttons (collab is now an icon like the
-    // rest, freeing vertical space for the queue below).
+    // A single horizontal row of icon buttons. The collab on/off toggle now
+    // doubles as the NATIVE/COLLAB queue switch (V4.5 pivot, per user request
+    // to fold the separate switcher back into this button instead of a
+    // second widget): on → drive/show the collab queue; off → passively
+    // mirror YT Music's own queue. Sharing and queue-source are the same
+    // concept from the user's perspective — nothing to share while passive.
     return Row(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
         _iconBtn(
           icon: collabOn ? Icons.wifi_tethering : Icons.wifi_tethering_off,
           color: collabOn ? theme.colorScheme.primary : onSurface.withOpacity(0.5),
-          tooltip: collabOn ? 'Collab on — passenger sharing open' : 'Collab off',
-          onTap: () => collabOn ? collab.disable() : collab.enable(),
+          tooltip: collabOn ? 'Collab on — showing collab queue, passenger sharing open' : 'Collab off — showing YT Music\'s native queue',
+          onTap: () {
+            if (collabOn) {
+              collab.disable();
+              collab.switchToNative();
+            } else {
+              collab.enable();
+              collab.switchToCollab();
+            }
+          },
         ),
         // Sharing/permission controls — greyed (but still tappable, so they can be
         // pre-configured) when Collab is off, since they only matter once sharing is open.
@@ -123,16 +155,7 @@ class _QueueTabState extends State<QueueTab> {
             ],
           ),
         ),
-        if (ytService.currentQueue.isNotEmpty)
-          _iconBtn(
-            icon: collab.detached ? Icons.link_off : Icons.link,
-            color: collab.detached ? Colors.orangeAccent : onSurface.withOpacity(0.5),
-            tooltip: collab.detached
-                ? 'Detached — tap to let our queue take back over'
-                : 'Detach — let YT Music\'s own queue take over',
-            onTap: () => collab.detached ? collab.reattach() : collab.detach(),
-          ),
-        if (ytService.currentQueue.isNotEmpty)
+        if (!isNative && ytService.currentQueue.isNotEmpty)
           _iconBtn(
             icon: Icons.delete_sweep,
             color: Colors.redAccent,
@@ -143,17 +166,20 @@ class _QueueTabState extends State<QueueTab> {
     );
   }
 
+  // Bigger tap target for driving — was 36x36/22, now a full 48dp (Material's
+  // minimum comfortable touch size) without growing the header's height,
+  // since it was already taller than this.
   Widget _iconBtn({required IconData icon, required Color color, required String tooltip, required VoidCallback onTap}) {
     return SizedBox(
-      width: 36,
-      height: 36,
+      width: 48,
+      height: 48,
       child: IconButton(
         icon: Icon(icon, color: color),
         onPressed: onTap,
         tooltip: tooltip,
         padding: EdgeInsets.zero,
         constraints: const BoxConstraints(),
-        iconSize: 22,
+        iconSize: 27,
       ),
     );
   }
@@ -270,7 +296,10 @@ class _QueueTabState extends State<QueueTab> {
                   color: Colors.transparent,
                   child: InkWell(
                     borderRadius: BorderRadius.circular(8),
-                    onTap: () => collab.playAt(index),
+                    onTap: () {
+                      _followNowPlaying();
+                      collab.playAt(index);
+                    },
                     child: Container(
                       decoration: isPlaying
                           ? BoxDecoration(
@@ -327,6 +356,143 @@ class _QueueTabState extends State<QueueTab> {
                           isPlaying
                               ? Icon(Icons.equalizer, color: theme.colorScheme.primary, size: 20)
                               : Icon(Icons.play_arrow, color: onSurface.withOpacity(0.3), size: 20),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        if (_userScrolled)
+          Positioned(
+            bottom: 16,
+            right: 8,
+            child: FloatingActionButton.small(
+              backgroundColor: theme.colorScheme.primary,
+              onPressed: () {
+                setState(() => _userScrolled = false);
+                _lastScrolledIndex = -1;
+                _maybeAutoScroll(playingIndex);
+              },
+              child: const Icon(Icons.my_location, color: Colors.white),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _nativeThumbnail(String? iconUri, bool isPlaying, ThemeData theme, Color onSurface) {
+    final placeholder = Container(
+      width: 50,
+      height: 50,
+      decoration: BoxDecoration(
+        color: onSurface.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Icon(
+        isPlaying ? Icons.equalizer : Icons.music_note,
+        color: isPlaying ? theme.colorScheme.primary : onSurface.withOpacity(0.4),
+      ),
+    );
+    if (iconUri == null || iconUri.isEmpty) return placeholder;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: Image.network(
+        iconUri,
+        width: 50,
+        height: 50,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => placeholder,
+      ),
+    );
+  }
+
+  /// Read-only mirror of YT Music's OWN queue (V4.5 pivot), history-prepended
+  /// (see build()). No videoId — YT Music's session doesn't expose one per
+  /// queue item — so tapping a row drives playback via the exact `queueId`
+  /// (nativeSkipToQueueItem), not app-side index tracking. Thumbnails come
+  /// from each item's `iconUri` when YT Music provides one.
+  Widget _buildNativeQueueList(CollabService collab, List<Map<String, String>> queue, ThemeData theme, Color onSurface, int playingIndex) {
+    if (queue.isEmpty) {
+      return Center(
+        child: Text(
+          "No native queue.\nPlay a Supermix, radio, or anything in YT Music.",
+          textAlign: TextAlign.center,
+          style: TextStyle(color: onSurface.withOpacity(0.5), fontSize: 16),
+        ),
+      );
+    }
+
+    return Stack(
+      children: [
+        NotificationListener<ScrollUpdateNotification>(
+          onNotification: (notification) {
+            if (notification.dragDetails != null && !_userScrolled) {
+              setState(() => _userScrolled = true);
+            }
+            return false;
+          },
+          child: ListView.builder(
+            controller: _scrollController,
+            itemExtent: _kQueueRowExtent,
+            itemCount: queue.length,
+            itemBuilder: (context, index) {
+              final item = queue[index];
+              final isPlaying = index == playingIndex;
+              final queueId = int.tryParse(item['queueId'] ?? '') ?? -1;
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 6.0),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: queueId >= 0
+                        ? () {
+                            _followNowPlaying();
+                            collab.nativeSkipToQueueItem(queueId);
+                          }
+                        : null,
+                    child: Container(
+                      decoration: isPlaying
+                          ? BoxDecoration(
+                              color: theme.colorScheme.primary.withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border(left: BorderSide(color: theme.colorScheme.primary, width: 4)),
+                            )
+                          : null,
+                      padding: EdgeInsets.only(left: isPlaying ? 8.0 : 4.0, right: 6.0),
+                      child: Row(
+                        children: [
+                          _nativeThumbnail(item['iconUri'], isPlaying, theme, onSurface),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  item['title']?.isNotEmpty == true ? item['title']! : 'Unknown',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold,
+                                    color: isPlaying ? theme.colorScheme.primary : onSurface,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  item['subtitle']?.isNotEmpty == true ? item['subtitle']! : 'Unknown Artist',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(fontSize: 13, color: onSurface.withOpacity(0.5)),
+                                ),
+                              ],
+                            ),
+                          ),
                         ],
                       ),
                     ),

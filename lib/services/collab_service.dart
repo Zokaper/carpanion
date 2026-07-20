@@ -9,6 +9,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../main.dart';
 import 'youtube_service.dart';
 
+/// Which queue is currently driving/being displayed. [collab] is the app's own
+/// built queue (favorites/collab, driven via [CollabService.playAt]). [native]
+/// is a passive mirror of YT Music's own queue (V4.5 pivot) — the app issues at
+/// most a one-shot trigger ([CollabService.playNativeMix]) and otherwise only
+/// reads state; no reassert/inference, so no double-transition jank.
+enum QueueSource { collab, native }
+
 /// App-level engine for the Collaborative Playback feature.
 ///
 /// This lives for the whole app session (registered in `main.dart`'s
@@ -27,7 +34,7 @@ class CollabService extends ChangeNotifier {
   static const String _sessionKey = 'collab_session_id';
   static const String _enabledKey = 'collab_enabled';
   static const String _indexKey = 'collab_index';
-  static const String _detachedKey = 'collab_detached';
+  static const String _queueSourceKey = 'collab_queue_source';
 
   final DashboardProvider _dashboard;
   final YouTubeService _yt;
@@ -53,11 +60,10 @@ class CollabService extends ChangeNotifier {
   int _restartedAtStartMs = 0;
   bool _allowEditing = false;
   bool _allowMediaControl = false;
-  // True when the user has manually released our queue's grip on playback (Detach):
-  // we keep mirroring/persisting state but stop reasserting the queue and stop
-  // auto-starting, so YT Music's own queue/autoplay can take over. Non-destructive —
-  // the queue and _currentPlayingIndex are preserved for Reattach.
-  bool _detached = false;
+  // Which queue is currently in control — see [QueueSource]. Switching to
+  // native is non-destructive: the collab queue and _currentPlayingIndex are
+  // preserved so switching back to collab picks up where it left off.
+  QueueSource _queueSource = QueueSource.collab;
 
   // Tracked to detect changes coming from DashboardProvider notifications.
   String _lastTrack = '';
@@ -96,8 +102,8 @@ class CollabService extends ChangeNotifier {
   /// or the user plays something unrelated in YT Music.
   bool get playbackActive => _playbackActive;
 
-  /// True while the user has manually detached from our queue (see [detach]/[reattach]).
-  bool get detached => _detached;
+  /// Which queue is currently in control (see [QueueSource]).
+  QueueSource get queueSource => _queueSource;
 
   /// The album/track cover for the CURRENTLY PLAYING queue item — but only when
   /// the native now-playing track actually matches it. Lets the now-playing panel
@@ -133,7 +139,7 @@ class CollabService extends ChangeNotifier {
       }
       _enabled = prefs.getBool(_enabledKey) ?? false;
       _currentPlayingIndex = prefs.getInt(_indexKey) ?? -1;
-      _detached = prefs.getBool(_detachedKey) ?? false;
+      _queueSource = prefs.getString(_queueSourceKey) == 'native' ? QueueSource.native : QueueSource.collab;
     } catch (e) {
       debugPrint('CollabService: failed to load persisted state: $e');
       if (_sessionId.isEmpty) _sessionId = _generateSessionId();
@@ -152,7 +158,7 @@ class CollabService extends ChangeNotifier {
     // YT Music is likely still playing the song; if it matches a queue item,
     // reconcile the highlight to it now (no playback triggered) and resume Auto-DJ.
     final restoredIdx = _matchQueueIndex(_lastTrack);
-    if (restoredIdx != -1 && !_detached) {
+    if (restoredIdx != -1 && _queueSource != QueueSource.native) {
       _currentPlayingIndex = restoredIdx;
       _playbackActive = true;
     }
@@ -175,7 +181,7 @@ class CollabService extends ChangeNotifier {
       await prefs.setString(_sessionKey, _sessionId);
       await prefs.setBool(_enabledKey, _enabled);
       await prefs.setInt(_indexKey, _currentPlayingIndex);
-      await prefs.setBool(_detachedKey, _detached);
+      await prefs.setString(_queueSourceKey, _queueSource == QueueSource.native ? 'native' : 'collab');
     } catch (e) {
       debugPrint('CollabService: failed to persist state: $e');
     }
@@ -315,9 +321,11 @@ class CollabService extends ChangeNotifier {
   void _onDashboardUpdate() {
     if (!_initialized) return;
 
-    // Detached: still mirror play state / track for the UI and passengers, but
-    // don't reassert or auto-advance the queue — see detach()/reattach().
-    if (_detached) {
+    // Native mode: still mirror play state / track for the UI and passengers,
+    // but don't reassert or auto-advance the collab queue — see
+    // switchToNative()/switchToCollab(). The actual native queue display comes
+    // from DashboardProvider.nativeQueue, not from anything tracked here.
+    if (_queueSource == QueueSource.native) {
       if (_dashboard.isPlaying != _lastPlaying) {
         _lastPlaying = _dashboard.isPlaying;
         _socket?.emit('update_play_state', _lastPlaying);
@@ -474,7 +482,7 @@ class CollabService extends ChangeNotifier {
 
   /// Auto-start playback when a song is added to an idle queue (nothing playing).
   void _maybeAutoStart() {
-    if (!_detached && !_playbackActive && _currentPlayingIndex == -1 && _yt.currentQueue.isNotEmpty) {
+    if (_queueSource != QueueSource.native && !_playbackActive && _currentPlayingIndex == -1 && _yt.currentQueue.isNotEmpty) {
       playAt(0);
     }
   }
@@ -587,24 +595,27 @@ class CollabService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Releases our queue's grip on playback without touching it: YT Music's own
-  /// queue/autoplay (and picking a song directly on the car screen) is no longer
-  /// fought by the reclaim logic in [_onDashboardUpdate]. Non-destructive — the
-  /// queue and [_currentPlayingIndex] are untouched, so [reattach] (or tapping
-  /// any queue row, via [playAt]) picks back up where it left off.
-  void detach() {
-    if (_detached) return;
-    _detached = true;
+  /// Releases the collab queue's grip on playback without touching it: YT
+  /// Music's own queue/autoplay (and picking a song directly on the car
+  /// screen) is no longer fought by the reclaim logic in [_onDashboardUpdate].
+  /// Non-destructive — the collab queue and [_currentPlayingIndex] are
+  /// untouched, so [switchToCollab] (or tapping any queue row, via [playAt])
+  /// picks back up where it left off.
+  void switchToNative() {
+    if (_queueSource == QueueSource.native) return;
+    _queueSource = QueueSource.native;
+    _enabled = false; // nothing collab-driven to share while mirroring YT Music
     _persist();
     notifyListeners();
   }
 
-  /// Resumes driving the queue. If the currently-playing native track matches a
-  /// queue entry, syncs the highlight/Auto-DJ to it immediately; otherwise the
-  /// queue stays paused-in-place until the user taps a row (same as a cold restore).
-  void reattach() {
-    if (!_detached) return;
-    _detached = false;
+  /// Resumes driving the collab queue. If the currently-playing native track
+  /// matches a queue entry, syncs the highlight/Auto-DJ to it immediately;
+  /// otherwise the queue stays paused-in-place until the user taps a row
+  /// (same as a cold restore).
+  void switchToCollab() {
+    if (_queueSource == QueueSource.collab) return;
+    _queueSource = QueueSource.collab;
     final idx = _matchQueueIndex(_lastTrack);
     if (idx != -1) {
       _currentPlayingIndex = idx;
@@ -614,8 +625,77 @@ class CollabService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Triggers a mix/radio/playlist to play NATIVELY in YT Music (V4.5 pivot) —
+  /// the app issues this one command and then only mirrors whatever queue
+  /// results (DashboardProvider.nativeQueue); it never builds its own track
+  /// list or drives playback for this path, so there's no reassert/inference
+  /// to race against YT Music's own skip handling.
+  Future<void> playNativeMix({required String listId, String? videoId}) async {
+    _queueSource = QueueSource.native;
+    _enabled = false; // nothing collab-driven to share while mirroring YT Music
+    _dashboard.clearNativeQueueHistory(); // fresh mix — don't carry over the last one's played history
+    _persist();
+    notifyListeners();
+    try {
+      final result = await DashboardProvider.platform.invokeMethod('playNativeMix', {
+        'listId': listId,
+        if (videoId != null) 'videoId': videoId,
+      });
+      debugPrint('Collab: playNativeMix result: $result');
+      final success = result is Map && result['success'] == true;
+      if (!success) {
+        // No YT Music session yet (cold start / app not launched this run) —
+        // same fallback playAt() uses: launch YT Music directly on the mix's
+        // watch URL, which also warms up its session for next time.
+        debugPrint('Collab: playNativeMix failed, falling back to intent');
+        _playViaIntent('', videoId: videoId, listId: listId);
+      }
+    } catch (e) {
+      debugPrint('Collab: playNativeMix error: $e');
+      _playViaIntent('', videoId: videoId, listId: listId);
+    }
+  }
+
+  // --- Native transport passthrough (QueueSource.native) — no local state to
+  // reconcile afterward; the push event reports whatever actually happens.
+  Future<void> nativeNext() async {
+    try {
+      await DashboardProvider.platform.invokeMethod('nativeSkipNext');
+    } catch (e) {
+      debugPrint('Collab: nativeSkipNext error: $e');
+    }
+  }
+
+  Future<void> nativePrevious() async {
+    try {
+      await DashboardProvider.platform.invokeMethod('nativeSkipPrevious');
+    } catch (e) {
+      debugPrint('Collab: nativeSkipPrevious error: $e');
+    }
+  }
+
+  Future<void> nativeTogglePlayPause() async {
+    try {
+      await DashboardProvider.platform.invokeMethod('nativeTogglePlayPause');
+    } catch (e) {
+      debugPrint('Collab: nativeTogglePlayPause error: $e');
+    }
+  }
+
+  Future<void> nativeSkipToQueueItem(int queueId) async {
+    try {
+      await DashboardProvider.platform.invokeMethod('nativeSkipToQueueItem', {'queueId': queueId});
+    } catch (e) {
+      debugPrint('Collab: nativeSkipToQueueItem error: $e');
+    }
+  }
+
   // --- Media controls ---
   void next() {
+    if (_queueSource == QueueSource.native) {
+      nativeNext();
+      return;
+    }
     if (_currentPlayingIndex != -1 && _yt.currentQueue.length > _currentPlayingIndex + 1) {
       playAt(_currentPlayingIndex + 1);
     } else {
@@ -624,6 +704,10 @@ class CollabService extends ChangeNotifier {
   }
 
   void previous() {
+    if (_queueSource == QueueSource.native) {
+      nativePrevious();
+      return;
+    }
     if (_currentPlayingIndex > 0) {
       playAt(_currentPlayingIndex - 1);
     } else {
@@ -635,7 +719,7 @@ class CollabService extends ChangeNotifier {
   /// falling back to a launch intent if the session isn't reachable.
   void playAt(int index) {
     if (index < 0 || index >= _yt.currentQueue.length) return;
-    _detached = false; // any deliberate play means "drive the queue again"
+    _queueSource = QueueSource.collab; // any deliberate collab play means "drive the queue again"
     _currentPlayingIndex = index;
     _playbackActive = true;
     _lastPlayAtMs = DateTime.now().millisecondsSinceEpoch; // suppress PREVIOUS mis-detect while position settles
@@ -675,12 +759,21 @@ class CollabService extends ChangeNotifier {
     });
   }
 
-  void _playViaIntent(String query, {String? videoId}) {
+  void _playViaIntent(String query, {String? videoId, String? listId}) {
     // Prefer the EXACT track by its watch URL. A search intent (the old fallback)
     // resolves to whatever YT Music ranks first — often the wrong song or a video
     // version — which is why a cold-start album could open on the wrong track.
     final AndroidIntent intent;
-    if (videoId != null && videoId.isNotEmpty) {
+    if (listId != null && listId.isNotEmpty) {
+      final data = videoId != null && videoId.isNotEmpty
+          ? 'https://music.youtube.com/watch?v=$videoId&list=$listId'
+          : 'https://music.youtube.com/watch?list=$listId';
+      intent = AndroidIntent(
+        action: 'android.intent.action.VIEW',
+        data: data,
+        package: 'com.google.android.apps.youtube.music',
+      );
+    } else if (videoId != null && videoId.isNotEmpty) {
       intent = AndroidIntent(
         action: 'android.intent.action.VIEW',
         data: 'https://music.youtube.com/watch?v=$videoId',
@@ -729,7 +822,7 @@ class CollabService extends ChangeNotifier {
   Future<void> clearQueue() async {
     _currentPlayingIndex = -1;
     _playbackActive = false;
-    _detached = false;
+    _queueSource = QueueSource.collab;
     await _yt.clearPlaylist();
     await _persist();
     notifyListeners();
@@ -741,7 +834,7 @@ class CollabService extends ChangeNotifier {
     _currentPlayingIndex = -1;
     _playbackActive = false;
     _enabled = false;
-    _detached = false;
+    _queueSource = QueueSource.collab;
     await _yt.clearPlaylist();
     await _persist();
 

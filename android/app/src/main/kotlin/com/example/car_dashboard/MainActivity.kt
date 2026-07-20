@@ -129,13 +129,28 @@ class MainActivity : FlutterActivity() {
             val duration = md?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
             val position = ps?.position ?: 0L
             val isPlaying = ps?.state == PlaybackState.STATE_PLAYING
+            // YT Music's own queue (native passive-mirror mode, V4.5 pivot) — title/
+            // subtitle are reliable for display; mediaId/mediaUri are consistently
+            // null (confirmed on-device), so per-item navigation uses queueId with
+            // nativeSkipToQueueItem, not a videoId. iconUri carries per-item art.
+            val queueItems = (controller.queue ?: emptyList()).map { item ->
+                mapOf(
+                    "queueId" to item.queueId,
+                    "title" to (item.description?.title?.toString() ?: ""),
+                    "subtitle" to (item.description?.subtitle?.toString() ?: ""),
+                    "iconUri" to (item.description?.iconUri?.toString() ?: "")
+                )
+            }
+            val activeQueueItemId = ps?.activeQueueItemId ?: -1L
             val event = mapOf(
                 "title" to title,
                 "artist" to artist,
                 "album" to album,
                 "position" to position,
                 "duration" to duration,
-                "isPlaying" to isPlaying
+                "isPlaying" to isPlaying,
+                "queue" to queueItems,
+                "activeQueueItemId" to activeQueueItemId
             )
             runOnUiThread { mediaEventSink?.success(event) }
         } catch (e: Exception) {
@@ -377,15 +392,6 @@ class MainActivity : FlutterActivity() {
                             val artist = md?.getString(MediaMetadata.METADATA_KEY_ARTIST)
                                 ?: md?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) ?: ""
                             val album = md?.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: ""
-                            // TEMP RECON (Feature C): dump every id-ish field so we can tell
-                            // whether any reliably carries the current track's videoId
-                            // (especially for tracks YT Music autoplayed). Remove once decided.
-                            android.util.Log.d("MediaRecon",
-                                "title=$title" +
-                                " | MEDIA_ID=${md?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)}" +
-                                " | desc.mediaId=${md?.description?.mediaId}" +
-                                " | desc.mediaUri=${md?.description?.mediaUri}" +
-                                " | activeQueueItemId=${controller.playbackState?.activeQueueItemId}")
                             result.success(mapOf(
                                 "title" to title,
                                 "artist" to artist,
@@ -703,6 +709,103 @@ class MainActivity : FlutterActivity() {
                         ))
                     }
                 }
+                // V4.5 pivot: play a mix/radio/playlist NATIVELY in YT Music (list=
+                // context on the watch URL — confirmed on-device to load the whole
+                // queue, no UI flash, same mechanism as the single-track playFromUri
+                // below). The queue that results is then mirrored via the pushed
+                // "queue"/"activeQueueItemId" fields (see pushMediaEvent) — the app
+                // never builds its own track list or drives playback for this path.
+                "playNativeMix" -> {
+                    try {
+                        val videoId = call.argument<String>("videoId")
+                        val listId = call.argument<String>("listId")
+                        if (listId.isNullOrEmpty()) {
+                            result.success(mapOf("success" to false, "error" to "listId required"))
+                            return@setMethodCallHandler
+                        }
+                        val mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+                        val componentName = ComponentName(this@MainActivity, DashcamListenerService::class.java)
+                        val controllers = mediaSessionManager.getActiveSessions(componentName)
+                        val ytController = controllers.firstOrNull { it.packageName == "com.google.android.apps.youtube.music" }
+                        if (ytController == null) {
+                            result.success(mapOf("success" to false, "error" to "No YT Music media session found"))
+                            return@setMethodCallHandler
+                        }
+                        val uri = if (!videoId.isNullOrEmpty())
+                            android.net.Uri.parse("https://music.youtube.com/watch?v=$videoId&list=$listId")
+                        else
+                            android.net.Uri.parse("https://music.youtube.com/watch?list=$listId")
+                        val extras = android.os.Bundle()
+                        extras.putString("android.intent.extra.focus", "vnd.android.cursor.item/audio")
+                        ytController.transportControls.playFromUri(uri, extras)
+                        android.util.Log.d("Carpanion", "playNativeMix: playFromUri sent: $uri")
+                        result.success(mapOf("success" to true, "uri" to uri.toString()))
+                    } catch (e: Exception) {
+                        android.util.Log.e("Carpanion", "playNativeMix error: ${e.message}")
+                        result.success(mapOf("success" to false, "error" to (e.message ?: "Unknown error")))
+                    }
+                }
+                // V4.5 pivot — transport passthrough for native-mirror mode: these just
+                // forward to YT Music's own controller, no local state to reconcile
+                // afterward (the push event reports whatever actually happens).
+                "nativeSkipNext", "nativeSkipPrevious", "nativeTogglePlayPause" -> {
+                    try {
+                        val mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+                        val componentName = ComponentName(this@MainActivity, DashcamListenerService::class.java)
+                        val controllers = mediaSessionManager.getActiveSessions(componentName)
+                        val ytController = controllers.firstOrNull { it.packageName == "com.google.android.apps.youtube.music" }
+                        if (ytController == null) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        when (call.method) {
+                            "nativeSkipNext" -> ytController.transportControls.skipToNext()
+                            "nativeSkipPrevious" -> ytController.transportControls.skipToPrevious()
+                            "nativeTogglePlayPause" -> {
+                                val isPlaying = ytController.playbackState?.state == PlaybackState.STATE_PLAYING
+                                if (isPlaying) ytController.transportControls.pause() else ytController.transportControls.play()
+                            }
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        android.util.Log.e("Carpanion", "${call.method} error: ${e.message}")
+                        result.success(false)
+                    }
+                }
+                "nativeSkipToQueueItem" -> {
+                    try {
+                        val queueId = (call.argument<Number>("queueId"))?.toLong()
+                        if (queueId == null) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        val mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+                        val componentName = ComponentName(this@MainActivity, DashcamListenerService::class.java)
+                        val controllers = mediaSessionManager.getActiveSessions(componentName)
+                        val ytController = controllers.firstOrNull { it.packageName == "com.google.android.apps.youtube.music" }
+                        if (ytController == null) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        ytController.transportControls.skipToQueueItem(queueId)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        android.util.Log.e("Carpanion", "nativeSkipToQueueItem error: ${e.message}")
+                        result.success(false)
+                    }
+                }
+                // SPIKE (Fact B/injection, V4.5 pivot plan step 1) — RESOLVED WITHOUT a
+                // device test: android.media.session.MediaController (the plain
+                // framework class getActiveSessions() returns) has NO queue-mutation
+                // method at all — only getQueue()/getQueueTitle() (read) and a generic
+                // sendCommand(). addQueueItem() only exists on the AndroidX
+                // MediaControllerCompat wrapper, and even there it only works if the
+                // session-side app implements the matching compat callback — not
+                // something we can drive against YT Music's session from here.
+                // VERDICT: collab/passenger add-to-queue cannot go passive; it stays on
+                // the app's existing owned-queue path (V4.5 pivot plan Step 3, "no"
+                // branch). This handler was removed after confirming the API doesn't
+                // exist (see git history for the attempted implementation).
                 "seekTo" -> {
                     try {
                         val positionMs = (call.argument<Number>("position"))?.toLong()

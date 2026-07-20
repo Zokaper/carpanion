@@ -546,165 +546,55 @@ class YouTubeService extends ChangeNotifier {
     return null;
   }
 
-  /// Fetches a shuffled artist radio (YT Music's own popularity-weighted mix).
-  Future<List<Map<String, String>>> getArtistRadioTracks(String artist) async {
+  /// Resolves an album's own watch-playlist id (OLAK5uy…/VL…, V4.5 pivot) for
+  /// native triggering via [CollabService.playNativeMix] — same idea as
+  /// [getArtistRadioPlaylistId], just for albums. Looks for the id on the
+  /// album header's PLAY/SHUFFLE button first (most reliable — every track row
+  /// also carries the same playlistId, so a generic recursive search works too,
+  /// just with header priority to avoid grabbing something from a nested shelf).
+  Future<String?> getAlbumPlaylistId(String album, String artist) async {
+    try {
+      final data = await _innertubePost('search', {'query': '$album $artist'.trim()});
+      final albumId = _pickAlbumId(data, album) ?? _findBrowseId(data, 'MPRE');
+      if (albumId == null) {
+        debugPrint('getAlbumPlaylistId: no album browseId for "$album $artist"');
+        return null;
+      }
+      final browse = await _innertubePost('browse', {'browseId': albumId});
+      final header = _findFirstOfKey(browse, const ['musicResponsiveHeaderRenderer', 'musicDetailHeaderRenderer']);
+      final playlistId = _findAnyPlaylistId(header) ?? _findAnyPlaylistId(browse);
+      if (playlistId == null) {
+        debugPrint('getAlbumPlaylistId: no playlistId for "$album $artist" (browse $albumId)');
+      }
+      return playlistId;
+    } catch (e) {
+      debugPrint('getAlbumPlaylistId failed: $e');
+      return null;
+    }
+  }
+
+  /// Resolves just the RD… radio playlist id for an artist (V4.5 pivot — the
+  /// caller triggers it NATIVELY via [CollabService.playNativeMix] instead of
+  /// this service expanding it into a track list itself).
+  Future<String?> getArtistRadioPlaylistId(String artist) async {
     try {
       final data = await _innertubePost('search', {'query': artist});
       // Artist browseIds are channel ids ("UC...").
       final artistId = _findBrowseId(data, 'UC');
       if (artistId == null) {
-        debugPrint('getArtistRadioTracks: no artist browseId for "$artist"');
-        return [];
+        debugPrint('getArtistRadioPlaylistId: no artist browseId for "$artist"');
+        return null;
       }
       final browse = await _innertubePost('browse', {'browseId': artistId});
       // Radio/shuffle playlist ids start with "RD".
       final radioId = _findRadioPlaylistId(browse);
       if (radioId == null) {
-        debugPrint('getArtistRadioTracks: no radio playlist for "$artist"');
-        return [];
+        debugPrint('getArtistRadioPlaylistId: no radio playlist for "$artist"');
       }
-      final tracks = await _playlistPanelTracks(radioId);
-      // The RD… radio seed is deterministic (same first track every time), so
-      // shuffle for variety — the order isn't meaningful for our finite grab.
-      tracks.shuffle(_rng);
-      debugPrint('getArtistRadioTracks: "$artist" → ${tracks.length} tracks (shuffled)');
-      return tracks;
+      return radioId;
     } catch (e) {
-      debugPrint('getArtistRadioTracks failed: $e');
-      return [];
-    }
-  }
-
-  // Strips the video-only decoration YT's MV renderer titles carry that the
-  // audio ("- Topic") twin doesn't — e.g. "Song (Official Music Video)" vs
-  // "Song" — so the dedup key below matches both. Also collapses whitespace
-  // and strips punctuation so minor formatting drift (curly quotes, extra
-  // spaces) doesn't split an otherwise-identical pair into two keys.
-  static final _titleDecorationRe = RegExp(
-    r'[\(\[][^)\]]*\b(official|music|video|audio|lyric|lyrics|visualizer|mv)\b[^)\]]*[\)\]]',
-    caseSensitive: false,
-  );
-  static String _normalizeDedupText(String s) {
-    return s
-        .replaceAll(_titleDecorationRe, '')
-        .toLowerCase()
-        .replaceAll(RegExp(r"[^\w\s]"), '')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-  }
-
-  /// Expands a playlist/mix/radio id (RD…, RDCLAK5uy…, OLAK5uy…) into tracks via
-  /// the `next` endpoint (audio-only). Shared by artist radio and home mixes.
-  ///
-  /// [deepen]: for mixes/radios whose seed id can be a fixed, deterministic
-  /// pool (so re-fetching the same id later yields the same songs — the
-  /// Supermix-goes-stale complaint), follow `next`'s pagination continuation
-  /// (if one exists) to gather a deeper pool, then the caller shuffles/samples
-  /// a subset so each queue-up surfaces different songs. UNVERIFIED on-device:
-  /// we don't yet know whether YT Music's `next` panel actually exposes a
-  /// continuation for mix seeds — this degrades to a no-op (single page, same
-  /// as before) if no token is found, and logs what it saw in debug builds so
-  /// a real run confirms/tunes it.
-  Future<List<Map<String, String>>> _playlistPanelTracks(String playlistId, {bool deepen = false}) async {
-    var next = await _innertubePost('next', {'playlistId': playlistId, 'isAudioOnly': true});
-    final renderers = <Map>[];
-    _collectByKey(next, 'playlistPanelVideoRenderer', renderers);
-
-    if (deepen) {
-      var pagesFetched = 1;
-      const maxPages = 4; // bound both the pool size and worst-case request count
-      var token = _findStringByKey(next, 'continuation');
-      while (token != null && pagesFetched < maxPages) {
-        try {
-          next = await _innertubePost('next', {'continuation': token});
-        } catch (e) {
-          if (kDebugMode) debugPrint('_playlistPanelTracks: continuation fetch failed: $e');
-          break;
-        }
-        final page = <Map>[];
-        _collectByKey(next, 'playlistPanelVideoRenderer', page);
-        if (page.isEmpty) break; // nothing new — stop rather than loop on a stale token
-        renderers.addAll(page);
-        pagesFetched++;
-        token = _findStringByKey(next, 'continuation');
-      }
-      if (kDebugMode) {
-        debugPrint('_playlistPanelTracks(deepen): $pagesFetched page(s), '
-            '${renderers.length} renderer(s), ${token == null ? "no further" : "more"} continuation');
-      }
-    }
-
-    // Personalized mixes hand back BOTH the music-video and the audio ("- Topic")
-    // renderer for tracks that have a video, so a single mix double-queues them.
-    // Dedup by normalized title+artist (strips "(Official Video)"-style
-    // decoration that only the MV renderer's title carries — see
-    // _normalizeDedupText), keeping the first occurrence but preferring the
-    // audio (ATV) videoId over its OMV/UGC video twin. musicVideoType: ATV =
-    // audio track, OMV/UGC = a music/user video.
-    final tracks = <Map<String, String>>[];
-    final indexByKey = <String, int>{};
-    for (final r in renderers) {
-      final videoId = r['videoId']?.toString();
-      if (videoId == null || videoId.isEmpty) continue;
-      final title = _runsText(r['title']);
-      final byline = _runsText(r['longBylineText'] ?? r['shortBylineText']);
-      final artist = byline.split('•').first.trim();
-      final videoType = r['navigationEndpoint']?['watchEndpoint']
-          ?['watchEndpointMusicSupportedConfigs']?['watchEndpointMusicConfig']
-          ?['musicVideoType']?.toString() ?? '';
-      String thumb = '';
-      final thumbs = r['thumbnail']?['thumbnails'];
-      if (thumbs is List && thumbs.isNotEmpty) {
-        thumb = (thumbs.last['url']?.toString() ?? '').replaceAll(RegExp(r'=w\d+-h\d+'), '=w400-h400');
-      }
-      final track = {
-        'videoId': videoId,
-        'title': title.isNotEmpty ? title : 'Unknown',
-        'artist': artist,
-        'thumbnail': thumb,
-        'videoType': videoType,
-      };
-      final key = '${_normalizeDedupText(track['title']!)}|${_normalizeDedupText(artist)}';
-      final existing = indexByKey[key];
-      if (existing == null) {
-        indexByKey[key] = tracks.length;
-        tracks.add(track);
-      } else if (videoType == 'MUSIC_VIDEO_TYPE_ATV') {
-        // Replace the earlier video twin with this audio version (keep position).
-        tracks[existing] = track;
-      }
-    }
-    if (kDebugMode) _logDedupNearMisses(tracks);
-    return tracks;
-  }
-
-  /// DIAGNOSTIC (debug builds only): flags pairs that likely SHOULD have been
-  /// deduped above but weren't — one track's normalized title contains the
-  /// other's (a strong MV/audio-twin signal) yet they kept distinct videoIds.
-  /// Logs the raw title/artist/videoType so a real on-device capture (adb
-  /// logcat) can tune _normalizeDedupText if this still fires for a Supermix
-  /// the user flags as double-queuing.
-  void _logDedupNearMisses(List<Map<String, String>> tracks) {
-    for (var i = 0; i < tracks.length; i++) {
-      final a = tracks[i];
-      final aTitle = _normalizeDedupText(a['title'] ?? '');
-      if (aTitle.isEmpty) continue;
-      for (var j = i + 1; j < tracks.length; j++) {
-        final b = tracks[j];
-        if (a['videoId'] == b['videoId']) continue;
-        final bTitle = _normalizeDedupText(b['title'] ?? '');
-        if (bTitle.isEmpty) continue;
-        final titleOverlap = aTitle == bTitle || aTitle.contains(bTitle) || bTitle.contains(aTitle);
-        if (!titleOverlap) continue;
-        final aArtist = _normalizeDedupText(a['artist'] ?? '');
-        final bArtist = _normalizeDedupText(b['artist'] ?? '');
-        final artistOverlap = aArtist.isEmpty || bArtist.isEmpty ||
-            aArtist == bArtist || aArtist.contains(bArtist) || bArtist.contains(aArtist);
-        if (!artistOverlap) continue;
-        debugPrint('Dedup near-miss (likely MV/audio twin, not merged): '
-            'A="${a['title']}"/"${a['artist']}" (${a['videoType']}) id=${a['videoId']} vs '
-            'B="${b['title']}"/"${b['artist']}" (${b['videoType']}) id=${b['videoId']}');
-      }
+      debugPrint('getArtistRadioPlaylistId failed: $e');
+      return null;
     }
   }
 
@@ -806,39 +696,12 @@ class YouTubeService extends ChangeNotifier {
     return null;
   }
 
-  /// Resolves a mix tile to a playable track list for the native queue.
-  ///
-  /// Re-fetches the home feed first — in case YT Music rotates the mix's seed
-  /// `playlistId` over time (the "Supermix gives the same songs hours later"
-  /// complaint) — then pulls a deepened, shuffled pool from `next` so even a
-  /// stable/deterministic seed surfaces a different subset each time.
-  Future<List<Map<String, String>>> getMixTracks(HomeTile tile) async {
-    if (tile.songs != null && tile.songs!.isNotEmpty) return tile.songs!;
-    var pid = tile.playlistId;
-    if (pid == null || pid.isEmpty) return [];
-
-    // Best-effort refresh: re-browse the home feed and swap in whatever
-    // playlistId it hands back for the same tile now, in case it rotated.
-    // Falls back to the id we already have on any failure or feed reshuffle.
-    try {
-      final fresh = await fetchHomeTiles();
-      final match = fresh.firstWhere(
-        (t) => t.title.toLowerCase() == tile.title.toLowerCase(),
-        orElse: () => tile,
-      );
-      if (match.playlistId != null && match.playlistId!.isNotEmpty) pid = match.playlistId;
-    } catch (e) {
-      debugPrint('getMixTracks: home-feed refresh failed, using cached id: $e');
-    }
-
-    // A `VL…` browse id wraps the raw playlist id; `next` wants the raw id.
-    final playable = pid!.startsWith('VL') ? pid.substring(2) : pid;
-    final pool = await _playlistPanelTracks(playable, deepen: true);
-    if (pool.isEmpty) return pool;
-    pool.shuffle(_rng);
-    const sampleSize = 30;
-    return pool.length > sampleSize ? pool.sublist(0, sampleSize) : pool;
-  }
+  /// The curated song list for a tile that has one (Quick Picks — individual
+  /// songs, not a playlist/mix id). Tiles with a `playlistId` (Supermix,
+  /// Discover Mix, …) are triggered NATIVELY instead (V4.5 pivot — see
+  /// `_playMix` in main.dart / [CollabService.playNativeMix]), so this no
+  /// longer expands `playlistId` tiles into a track list itself.
+  List<Map<String, String>> getMixTracks(HomeTile tile) => tile.songs ?? [];
 
   /// Fetches the artist's OWN songs (not radio) — as many as YT Music exposes —
   /// in a weighted-random order (popular songs favored early, different each
@@ -976,6 +839,25 @@ class YouTubeService extends ChangeNotifier {
     return null;
   }
 
+  /// Finds the first `playlistId` under [node] with a "real playlist" prefix
+  /// (VL/OLAK/PL — excludes radio RD… ids, which [_findRadioPlaylistId] handles).
+  String? _findAnyPlaylistId(dynamic node) {
+    if (node is Map) {
+      final p = node['playlistId'];
+      if (p is String && (p.startsWith('VL') || p.startsWith('OLAK') || p.startsWith('PL'))) return p;
+      for (final v in node.values) {
+        final r = _findAnyPlaylistId(v);
+        if (r != null) return r;
+      }
+    } else if (node is List) {
+      for (final v in node) {
+        final r = _findAnyPlaylistId(v);
+        if (r != null) return r;
+      }
+    }
+    return null;
+  }
+
   String? _findFirstThumbnail(dynamic node) {
     if (node is Map) {
       final t = node['thumbnails'];
@@ -990,25 +872,6 @@ class YouTubeService extends ChangeNotifier {
       for (final v in node) {
         final r = _findFirstThumbnail(v);
         if (r != null) return r;
-      }
-    }
-    return null;
-  }
-
-  /// First string value found anywhere under [key] (e.g. a `next` response's
-  /// pagination `continuation` token, wherever YT Music happens to nest it).
-  String? _findStringByKey(dynamic node, String key) {
-    if (node is Map) {
-      final v = node[key];
-      if (v is String && v.isNotEmpty) return v;
-      for (final val in node.values) {
-        final found = _findStringByKey(val, key);
-        if (found != null) return found;
-      }
-    } else if (node is List) {
-      for (final val in node) {
-        final found = _findStringByKey(val, key);
-        if (found != null) return found;
       }
     }
     return null;

@@ -190,6 +190,22 @@ class DashboardProvider with ChangeNotifier {
   double _mediaDuration = 1.0;
   Uint8List? _currentAlbumArtBytes;
 
+  // V4.5 pivot: YT Music's OWN queue, mirrored read-only from the native push
+  // event (see _startMediaEventListener) — title/subtitle for display,
+  // queueId for exact "what's playing" matching (activeQueueItemId) and for
+  // driving playback via nativeSkipToQueueItem. No videoId (YT Music doesn't
+  // expose one per queue item), so this is display/navigation only.
+  List<Map<String, String>> _nativeQueue = [];
+  int _nativeActiveQueueItemId = -1;
+  // YT Music's getQueue() only ever returns the current+upcoming items, not
+  // history — a played item vanishes from the queue the moment the next one
+  // becomes active. We keep our own running log (oldest first) so the queue
+  // screen can still show what already played. Capped and cleared on a fresh
+  // playNativeMix() trigger (CollabService) so it doesn't carry over between
+  // unrelated mixes/sessions.
+  final List<Map<String, String>> _nativeQueueHistory = [];
+  static const int _maxNativeQueueHistory = 100;
+
   bool get isKmph => _isKmph;
   double get speed => _speed;
   double get accuracy => _accuracy;
@@ -201,6 +217,17 @@ class DashboardProvider with ChangeNotifier {
   double get mediaPosition => _mediaPosition;
   double get mediaDuration => _mediaDuration;
   Uint8List? get currentAlbumArtBytes => _currentAlbumArtBytes;
+  List<Map<String, String>> get nativeQueue => _nativeQueue;
+  int get nativeActiveQueueItemId => _nativeActiveQueueItemId;
+  List<Map<String, String>> get nativeQueueHistory => _nativeQueueHistory;
+
+  /// Clears the played-history log — call when a fresh mix/radio is triggered
+  /// (CollabService.playNativeMix) so a new session doesn't inherit the
+  /// previous one's already-played tracks.
+  void clearNativeQueueHistory() {
+    _nativeQueueHistory.clear();
+    notifyListeners();
+  }
   bool get hasLocationPermission => _permission == LocationPermission.whileInUse || _permission == LocationPermission.always;
   bool get canDrawOverlays => _canDrawOverlays;
   bool get hasNotificationAccess => _hasNotificationAccess;
@@ -1122,6 +1149,52 @@ class DashboardProvider with ChangeNotifier {
           }
         }
 
+        final rawQueue = event['queue'];
+        if (rawQueue is List) {
+          final rawParsed = rawQueue
+              .whereType<Map>()
+              .map((q) => {
+                    'queueId': (q['queueId'] ?? -1).toString(),
+                    'title': (q['title'] ?? '').toString(),
+                    'subtitle': (q['subtitle'] ?? '').toString(),
+                    'iconUri': (q['iconUri'] ?? '').toString(),
+                  })
+              .toList();
+          // YT Music occasionally reports a transient snapshot where the
+          // active item also appears again further down (self-corrects on
+          // the next push, e.g. right after a skip) — dedupe by queueId,
+          // keeping the first occurrence, so that never renders.
+          final seenIds = <String>{};
+          final parsed = [
+            for (final q in rawParsed)
+              if (seenIds.add(q['queueId']!)) q
+          ];
+          final activeId = (event['activeQueueItemId'] as num?)?.toInt() ?? -1;
+          final activeChanged = activeId != _nativeActiveQueueItemId;
+          if (!_nativeQueueEquals(parsed, _nativeQueue) || activeChanged) {
+            // The item that WAS active is about to fall off the front of
+            // getQueue()'s window — log it to history before it's gone,
+            // unless it's still present in the new snapshot (nothing lost).
+            // Only on an actual transition (activeChanged) — a same-track
+            // queue reshuffle must never archive the still-playing item.
+            if (activeChanged && _nativeActiveQueueItemId != -1) {
+              final leaving = _nativeQueue.where((q) => q['queueId'] == _nativeActiveQueueItemId.toString());
+              if (leaving.isNotEmpty && !parsed.any((q) => q['queueId'] == _nativeActiveQueueItemId.toString())) {
+                final item = leaving.first;
+                if (!_nativeQueueHistory.any((h) => h['queueId'] == item['queueId'])) {
+                  _nativeQueueHistory.add(item);
+                  while (_nativeQueueHistory.length > _maxNativeQueueHistory) {
+                    _nativeQueueHistory.removeAt(0);
+                  }
+                }
+              }
+            }
+            _nativeQueue = parsed;
+            _nativeActiveQueueItemId = activeId;
+            changed = true;
+          }
+        }
+
         if (changed) notifyListeners();
       } catch (e) {
         debugPrint("Media event apply error: $e");
@@ -1129,6 +1202,18 @@ class DashboardProvider with ChangeNotifier {
         _isApplyingMediaEvent = false;
       }
     }, onError: (e) => debugPrint("Media event stream error: $e"));
+  }
+
+  bool _nativeQueueEquals(List<Map<String, String>> a, List<Map<String, String>> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i]['queueId'] != b[i]['queueId'] ||
+          a[i]['title'] != b[i]['title'] ||
+          a[i]['subtitle'] != b[i]['subtitle']) {
+        return false;
+      }
+    }
+    return true;
   }
 
   bool _isFetchingMedia = false;
@@ -1897,6 +1982,21 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
   // thumb follows the finger and the 1s poller doesn't yank it back.
   double? _dragSeekMs;
 
+  // The native push events (added tonight) report YT Music's real
+  // PlaybackState near-instantly, including brief transient flips during a
+  // skip/play/pause (e.g. a momentary PAUSED between tracks) that the old 1s
+  // poll used to smooth over just by sampling infrequently. Debounce the
+  // DISPLAYED icon so it only follows a value that's held for a beat, instead
+  // of flickering through every transient state.
+  bool? _displayedIsPlaying;
+  Timer? _playingDebounceTimer;
+
+  @override
+  void dispose() {
+    _playingDebounceTimer?.cancel();
+    super.dispose();
+  }
+
   // Removed fake progress controller
 
 
@@ -1925,7 +2025,20 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
   @override
   Widget build(BuildContext context) {
     final provider = Provider.of<DashboardProvider>(context);
-    final isPlaying = provider.isPlaying;
+    final rawIsPlaying = provider.isPlaying;
+    _displayedIsPlaying ??= rawIsPlaying; // first build: show immediately, no delay
+    if (rawIsPlaying != _displayedIsPlaying) {
+      // (Re)schedule with the CURRENT value — if it flips back before this
+      // fires, the next build reschedules/cancels below with the reverted
+      // value, so a quick bounce never gets applied.
+      _playingDebounceTimer?.cancel();
+      _playingDebounceTimer = Timer(const Duration(milliseconds: 220), () {
+        if (mounted) setState(() => _displayedIsPlaying = rawIsPlaying);
+      });
+    } else {
+      _playingDebounceTimer?.cancel();
+    }
+    final isPlaying = _displayedIsPlaying!;
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
 
@@ -2141,10 +2254,15 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
         ],
       ),
 
-      // "Playing from queue" badge — pinned top-left over the album art so it
-      // no longer steals vertical space from the (already small) square cover.
-      if (context.watch<CollabService>().playbackActive)
-        Positioned(
+      // Active-queue badge — pinned top-left over the album art so it doesn't
+      // steal vertical space from the (already small) square cover. Shows
+      // which queue is in control (V4.5 pivot: NATIVE = passively mirroring
+      // YT Music's own queue, COLLAB = the app's own driven queue).
+      Builder(builder: (context) {
+        final collabQueue = context.watch<CollabService>();
+        final isNative = collabQueue.queueSource == QueueSource.native;
+        if (!isNative && !collabQueue.playbackActive) return const SizedBox.shrink();
+        return Positioned(
           top: 0,
           left: 0,
           child: Container(
@@ -2159,7 +2277,7 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
                 Icon(Icons.queue_music, size: 12, color: theme.colorScheme.primary),
                 const SizedBox(width: 5),
                 Text(
-                  "QUEUE",
+                  isNative ? "NATIVE" : "COLLAB",
                   style: TextStyle(
                     color: theme.colorScheme.primary,
                     fontSize: 9,
@@ -2170,7 +2288,8 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
               ],
             ),
           ),
-        ),
+        );
+      }),
 
       Positioned(
         top: 0,
@@ -2227,13 +2346,19 @@ class _MediaControlPanelState extends State<MediaControlPanel> {
     final color = onPressed == null
         ? theme.colorScheme.onSurface.withOpacity(0.25)
         : (active ? theme.colorScheme.primary : theme.colorScheme.onSurface.withOpacity(0.55));
-    return IconButton(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      constraints: const BoxConstraints(),
-      visualDensity: VisualDensity.compact,
-      icon: Icon(icon, color: color, size: 20),
-      tooltip: tooltip,
-      onPressed: onPressed,
+    // Bigger tap target for driving — these float over the album art
+    // (Positioned, not squeezed into a row), so growing them doesn't cost
+    // any layout space elsewhere.
+    return SizedBox(
+      width: 44,
+      height: 44,
+      child: IconButton(
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(),
+        icon: Icon(icon, color: color, size: 24),
+        tooltip: tooltip,
+        onPressed: onPressed,
+      ),
     );
   }
 
@@ -2371,6 +2496,17 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
       }
     } else if (type == 'album') {
       messenger.showSnackBar(SnackBar(content: Text('Loading album "${fav['title']}"…'), duration: const Duration(seconds: 2)));
+      // V4.5 pivot: trigger the album's own watch playlist NATIVELY in YT Music
+      // and mirror its real queue, instead of pre-fetching every track and
+      // driving it ourselves (also sidesteps the old audio/video-id dedup work —
+      // YT Music's own playlist just plays correctly).
+      final albumPlaylistId = await yt.getAlbumPlaylistId(fav['title'] ?? '', fav['subtitle'] ?? '');
+      if (albumPlaylistId != null && albumPlaylistId.isNotEmpty) {
+        await collab.playNativeMix(listId: albumPlaylistId);
+        _goToQueueView();
+        return;
+      }
+      // Fallback: no native playlist id found — old pre-fetch-and-drive path.
       final tracks = await yt.getAlbumTracks(fav['title'] ?? '', fav['subtitle'] ?? '');
       if (tracks.isNotEmpty) {
         await collab.loadQueueAndPlay(tracks, resolveAudio: true);
@@ -2384,13 +2520,22 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
         content: Text(isRadio ? 'Starting $name radio…' : 'Playing $name…'),
         duration: const Duration(seconds: 2),
       ));
-      final tracks = isRadio
-          ? await yt.getArtistRadioTracks(name)
-          : await yt.getArtistTracks(name);
-      if (tracks.isNotEmpty) {
-        await collab.loadQueueAndPlay(tracks);
-        _goToQueueView();
-        return;
+      if (isRadio) {
+        // V4.5 pivot: trigger the radio NATIVELY in YT Music and mirror its
+        // real queue, instead of building our own track list and driving it.
+        final radioId = await yt.getArtistRadioPlaylistId(name);
+        if (radioId != null && radioId.isNotEmpty) {
+          await collab.playNativeMix(listId: radioId);
+          _goToQueueView();
+          return;
+        }
+      } else {
+        final tracks = await yt.getArtistTracks(name);
+        if (tracks.isNotEmpty) {
+          await collab.loadQueueAndPlay(tracks);
+          _goToQueueView();
+          return;
+        }
       }
     }
 
@@ -2742,7 +2887,20 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
     final collab = context.read<CollabService>();
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(SnackBar(content: Text('Loading ${tile.title}…'), duration: const Duration(seconds: 2)));
-    final tracks = await yt.getMixTracks(tile);
+
+    final pid = tile.playlistId;
+    if (pid != null && pid.isNotEmpty) {
+      // V4.5 pivot: trigger the mix NATIVELY in YT Music and mirror its real
+      // queue, instead of scraping/building our own track list.
+      final playable = pid.startsWith('VL') ? pid.substring(2) : pid;
+      await collab.playNativeMix(listId: playable);
+      _goToQueueView();
+      return;
+    }
+
+    // Curated song-list tiles (Quick Picks) have no playlist id to trigger —
+    // keep the existing app-driven queue for these.
+    final tracks = yt.getMixTracks(tile);
     if (tracks.isNotEmpty) {
       await collab.loadQueueAndPlay(tracks);
       _goToQueueView();
