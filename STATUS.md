@@ -7,6 +7,55 @@ belongs in `AGENTS.md`, not here. When this file gets long, move older entries i
 
 ---
 
+## 2026-07-20 — Claude — V4.5 polish: native queue reflow, Supermix+QuickPicks, album/artist re-tap picker
+
+Three requested polish items ahead of V5, all verified on-device (real S25+ over wireless adb):
+
+1. **Native queue reflow jank** — `queue_tab.dart`'s `_buildNativeQueueList` had no per-row
+   `key` and used plain `Container`/`Text`, so every `media_events` push (which wholesale-
+   replaces `DashboardProvider._nativeQueue`) caused abrupt index-based content swaps instead
+   of a cross-fade. Added `ValueKey(item['queueId'])` per row plus `AnimatedContainer`/
+   `AnimatedDefaultTextStyle` (220ms) for the highlight/text-color transition.
+2. **Supermix + Quick Picks not always in the mix grid** — `fetchHomeTiles()` now
+   force-selects both by name before running the old `prefs` fallback loop, so a
+   lower-priority tile can no longer bump a successfully-parsed Quick Picks out of the top 4.
+   Also found (via on-device testing) that Quick Picks' shelf-detection itself is flaky —
+   one fresh fetch returned 0 quick-picks candidates entirely (not a selection-logic issue,
+   the shelf just didn't parse that time) — added a one-shot retry (`_quickPicksTile` on a
+   fresh `FEmusic_home` browse) when the first pass comes up empty. Confirmed on-device this
+   recovers a case that failed on the first attempt.
+3. **New feature: re-tap the playing native-queue row → Play Album / Play Artist** — tapping
+   the already-playing row now opens a bottom sheet instead of no-op'ing
+   `nativeSkipToQueueItem`. Play Album resolves `getAlbumPlaylistId(currentAlbum,
+   currentArtist)`, triggers it via `playNativeMix`, then waits (one-shot `DashboardProvider`
+   listener, 5s timeout) for the same track title to reappear as the active queue item before
+   calling `seekTo()` to resume near the original timestamp — confirmed on-device (resumed
+   within ~1s of the captured position). Play Artist resolves `getArtistRadioPlaylistId`.
+   Either option is disabled (not hidden-and-crashing) when `currentAlbum`/`currentArtist` is
+   empty — confirmed on-device for a track with no album metadata yet.
+
+**Bug found + fixed while testing #3**: `_pickAlbumId`/`_albumScore` (pre-existing, used by
+both `getAlbumTracks` and `getAlbumPlaylistId`) scored candidates on album-title overlap only
+and never looked at the artist — confirmed on-device it picked a completely unrelated artist's
+album (Juice WRLD's "Death Race For Love (Bonus Track Version)" resolved to "$lux — Death
+Race") because both titles partially substring-matched and tied on the length tiebreaker.
+Added `_rendererSubtitle` (reads the "Album • Artist • Year" subtitle search rows carry) and
+an artist-match term (±60) to `_albumScore`, now passed `artist` from both callers. Confirmed
+fixed for the Juice WRLD case (now stays same-artist). **Not fully fixed**: a same-artist
+case (Rio Romeo) still resolved a different album than intended ("Good Grief!" instead of the
+currently-playing "Good God!") — likely the exact title with punctuation isn't surfacing in
+the Innertube search results the way `_pickAlbumId` expects. This is the same "written without
+live-response validation" risk AGENTS.md already flags for album/artist parsing; root-causing
+it needs a live JSON dump (`debugDumpHome`-style), left as a follow-up, not chased further this
+session since the artist-safety fix (never play a stranger's album) is the higher-value win and
+is confirmed working.
+
+`puro flutter analyze` clean on `queue_tab.dart`/`youtube_service.dart` (only pre-existing
+`withOpacity` info-lints elsewhere; `main_corrupted.dart` errors are the known-dead file).
+Debug APK built and installed on the real device for all testing above.
+
+---
+
 ## 2026-07-20 — Claude — V4.5: move album favorites onto the native-mirror path too
 
 Follow-up to the pivot below, per the user: "move everything (except collab) to the new

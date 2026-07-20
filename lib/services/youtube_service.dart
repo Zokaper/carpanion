@@ -418,7 +418,7 @@ class YouTubeService extends ChangeNotifier {
       final data = await _innertubePost('search', {'query': '$album $artist'.trim()});
       // Pick the album whose title best matches, preferring the STANDARD edition
       // over Deluxe/Expanded/Video (which carries the wrong cover + video ids).
-      final albumId = _pickAlbumId(data, album) ?? _findBrowseId(data, 'MPRE');
+      final albumId = _pickAlbumId(data, album, artist) ?? _findBrowseId(data, 'MPRE');
       if (albumId == null) {
         debugPrint('getAlbumTracks: no album browseId for "$album $artist"');
         return [];
@@ -457,11 +457,18 @@ class YouTubeService extends ChangeNotifier {
   /// Chooses the best-matching album browseId from a search response. Collects
   /// (title, MPRE id) candidates and scores by title match, penalizing
   /// Deluxe/Expanded/Video editions unless the requested album asked for one.
-  String? _pickAlbumId(dynamic data, String wantedAlbum) {
+  /// [wantedArtist], when given, is matched against each candidate's subtitle
+  /// (search rows carry "Album • Artist • Year") — without this, a query like
+  /// "Death Race For Love (Bonus Track Version) Juice WRLD" could title-match
+  /// an unrelated album by a different artist that happens to share a short
+  /// substring (e.g. "Death Race"), since title-only scoring has no way to
+  /// tell the two apart.
+  String? _pickAlbumId(dynamic data, String wantedAlbum, [String? wantedArtist]) {
     final renderers = <Map>[];
     _collectByKey(data, 'musicResponsiveListItemRenderer', renderers);
     _collectByKey(data, 'musicTwoRowItemRenderer', renderers);
     final want = wantedAlbum.toLowerCase().trim();
+    final wantArtist = wantedArtist?.toLowerCase().trim() ?? '';
     String? best;
     double bestScore = -1;
     for (final r in renderers) {
@@ -469,7 +476,8 @@ class YouTubeService extends ChangeNotifier {
       if (id == null) continue;
       final title = _rendererTitle(r).toLowerCase().trim();
       if (title.isEmpty) continue;
-      final score = _albumScore(title, want);
+      final subtitle = _rendererSubtitle(r).toLowerCase();
+      final score = _albumScore(title, want, subtitle, wantArtist);
       if (score > bestScore) {
         bestScore = score;
         best = id;
@@ -478,7 +486,7 @@ class YouTubeService extends ChangeNotifier {
     return best;
   }
 
-  double _albumScore(String candidate, String want) {
+  double _albumScore(String candidate, String want, String candidateSubtitle, String wantArtist) {
     double score = 0;
     if (candidate == want) {
       score += 100;
@@ -491,7 +499,28 @@ class YouTubeService extends ChangeNotifier {
     if (candidateHasEdition && !wantHasEdition) score -= 40; // prefer standard
     // Prefer the closest length (fewer extra words) as a tiebreaker.
     score -= (candidate.length - want.length).abs() * 0.1;
+    // Artist match is decisive — a title-only tie between two same-ish-named
+    // albums by different artists must not be broken by search-result order.
+    if (wantArtist.isNotEmpty && candidateSubtitle.isNotEmpty) {
+      if (candidateSubtitle.contains(wantArtist)) {
+        score += 60;
+      } else {
+        score -= 60;
+      }
+    }
     return score;
+  }
+
+  /// Subtitle text of a search-result renderer (list row or two-row card) —
+  /// typically "Album • Artist • Year", the only place artist name appears
+  /// alongside an album search result.
+  String _rendererSubtitle(Map r) {
+    final flex = r['flexColumns'];
+    if (flex is List && flex.length > 1) {
+      final runs = flex[1]?['musicResponsiveListItemFlexColumnRenderer']?['text']?['runs'];
+      if (runs is List) return runs.map((e) => e?['text']?.toString() ?? '').join();
+    }
+    return _runsText(r['subtitle']);
   }
 
   /// Title of a search-result renderer (list row or two-row card).
@@ -555,7 +584,7 @@ class YouTubeService extends ChangeNotifier {
   Future<String?> getAlbumPlaylistId(String album, String artist) async {
     try {
       final data = await _innertubePost('search', {'query': '$album $artist'.trim()});
-      final albumId = _pickAlbumId(data, album) ?? _findBrowseId(data, 'MPRE');
+      final albumId = _pickAlbumId(data, album, artist) ?? _findBrowseId(data, 'MPRE');
       if (albumId == null) {
         debugPrint('getAlbumPlaylistId: no album browseId for "$album $artist"');
         return null;
@@ -636,15 +665,39 @@ class YouTubeService extends ChangeNotifier {
         candidates.add(HomeTile(title: title, thumbnail: _findFirstThumbnail(c) ?? '', playlistId: pid));
       }
 
-      // Best-effort "Quick picks" shelf (individual songs, not a card).
-      final qp = _quickPicksTile(data);
+      // Best-effort "Quick picks" shelf (individual songs, not a card). This
+      // shelf is flakier than the mix cards above — YT Music sometimes omits
+      // it from a given FEmusic_home response even when logged in with a
+      // healthy feed — so retry once with a fresh browse call before giving
+      // up, since a re-fetch often does surface it (per user reports of
+      // Quick Picks "sometimes" missing).
+      var qp = _quickPicksTile(data);
+      if (qp == null) {
+        final retryData = await _innertubePost('browse', {'browseId': 'FEmusic_home'});
+        if (retryData != null) qp = _quickPicksTile(retryData);
+      }
       if (qp != null) candidates.insert(0, qp);
 
-      // Select a stable set of 4: pin the preferred names in order, then fill.
-      const prefs = ['supermix', 'quick picks', 'discover mix', 'new release mix', 'my mix', 'listen again'];
+      // Select a stable set of 4. Supermix and Quick Picks are force-selected
+      // first (each parsed via an independent path — a card match vs. the
+      // separate `_quickPicksTile` shelf scan — so one succeeding is not a
+      // signal the other will; without forcing both, a lower-priority tile
+      // could otherwise bump a successfully-parsed Quick Picks out of the 4).
+      const forcedPrefs = ['supermix', 'quick picks'];
+      const prefs = ['discover mix', 'new release mix', 'my mix', 'listen again'];
       final selected = <HomeTile>[];
       final used = <String>{};
       String key(HomeTile t) => t.playlistId ?? t.title;
+      for (final p in forcedPrefs) {
+        for (final c in candidates) {
+          if (used.contains(key(c))) continue;
+          if (c.title.toLowerCase().contains(p)) {
+            selected.add(c);
+            used.add(key(c));
+            break;
+          }
+        }
+      }
       for (final p in prefs) {
         for (final c in candidates) {
           if (used.contains(key(c))) continue;

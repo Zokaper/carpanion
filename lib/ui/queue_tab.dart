@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -444,6 +445,7 @@ class _QueueTabState extends State<QueueTab> {
               final queueId = int.tryParse(item['queueId'] ?? '') ?? -1;
 
               return Padding(
+                key: ValueKey(item['queueId']),
                 padding: const EdgeInsets.only(bottom: 6.0),
                 child: Material(
                   color: Colors.transparent,
@@ -451,18 +453,28 @@ class _QueueTabState extends State<QueueTab> {
                     borderRadius: BorderRadius.circular(8),
                     onTap: queueId >= 0
                         ? () {
-                            _followNowPlaying();
-                            collab.nativeSkipToQueueItem(queueId);
+                            if (isPlaying) {
+                              _showAlbumArtistPicker(context, collab);
+                            } else {
+                              _followNowPlaying();
+                              collab.nativeSkipToQueueItem(queueId);
+                            }
                           }
                         : null,
-                    child: Container(
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeInOut,
                       decoration: isPlaying
                           ? BoxDecoration(
                               color: theme.colorScheme.primary.withOpacity(0.15),
                               borderRadius: BorderRadius.circular(8),
                               border: Border(left: BorderSide(color: theme.colorScheme.primary, width: 4)),
                             )
-                          : null,
+                          : BoxDecoration(
+                              color: Colors.transparent,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border(left: BorderSide(color: Colors.transparent, width: 4)),
+                            ),
                       padding: EdgeInsets.only(left: isPlaying ? 8.0 : 4.0, right: 6.0),
                       child: Row(
                         children: [
@@ -473,14 +485,18 @@ class _QueueTabState extends State<QueueTab> {
                               mainAxisSize: MainAxisSize.min,
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  item['title']?.isNotEmpty == true ? item['title']! : 'Unknown',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
+                                AnimatedDefaultTextStyle(
+                                  duration: const Duration(milliseconds: 220),
+                                  curve: Curves.easeInOut,
                                   style: TextStyle(
                                     fontSize: 15,
                                     fontWeight: FontWeight.bold,
                                     color: isPlaying ? theme.colorScheme.primary : onSurface,
+                                  ),
+                                  child: Text(
+                                    item['title']?.isNotEmpty == true ? item['title']! : 'Unknown',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
                                 const SizedBox(height: 2),
@@ -518,6 +534,114 @@ class _QueueTabState extends State<QueueTab> {
           ),
       ],
     );
+  }
+
+  /// Re-tap on the already-playing native queue row: offer to hand the whole
+  /// album or artist over to YT Music natively (same [CollabService.playNativeMix]
+  /// trick used for mixes/radio) instead of the normal single-tap "jump to this
+  /// row" behavior, which is a no-op when the row is already playing.
+  void _showAlbumArtistPicker(BuildContext context, CollabService collab) {
+    final dashboard = context.read<DashboardProvider>();
+    final ytService = context.read<YouTubeService>();
+    final album = dashboard.currentAlbum;
+    final artist = dashboard.currentArtist;
+    final trackTitle = dashboard.currentTrack;
+    final resumeMs = dashboard.mediaPosition.toInt();
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF151525),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(Icons.album, color: album.isNotEmpty ? Colors.white70 : Colors.white24),
+              title: Text('Play Album', style: TextStyle(color: album.isNotEmpty ? Colors.white : Colors.white30)),
+              subtitle: album.isNotEmpty ? Text(album, style: const TextStyle(color: Colors.white54)) : null,
+              onTap: album.isEmpty
+                  ? null
+                  : () {
+                      Navigator.pop(sheetContext);
+                      _playAlbumFromCurrent(dashboard, ytService, collab, album, artist, trackTitle, resumeMs);
+                    },
+            ),
+            ListTile(
+              leading: Icon(Icons.interpreter_mode, color: artist.isNotEmpty ? Colors.white70 : Colors.white24),
+              title: Text('Play Artist', style: TextStyle(color: artist.isNotEmpty ? Colors.white : Colors.white30)),
+              subtitle: artist.isNotEmpty ? Text(artist, style: const TextStyle(color: Colors.white54)) : null,
+              onTap: artist.isEmpty
+                  ? null
+                  : () {
+                      Navigator.pop(sheetContext);
+                      _playArtistFromCurrent(ytService, collab, artist);
+                    },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _playAlbumFromCurrent(
+    DashboardProvider dashboard,
+    YouTubeService ytService,
+    CollabService collab,
+    String album,
+    String artist,
+    String trackTitle,
+    int resumeMs,
+  ) async {
+    final albumId = await ytService.getAlbumPlaylistId(album, artist);
+    if (!mounted) return;
+    if (albumId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Couldn't find that album")));
+      return;
+    }
+    await collab.playNativeMix(listId: albumId);
+    if (!mounted || trackTitle.isEmpty || resumeMs < 3000) return;
+    _seekOnceTrackMatches(dashboard, trackTitle, resumeMs);
+  }
+
+  Future<void> _playArtistFromCurrent(YouTubeService ytService, CollabService collab, String artist) async {
+    final radioId = await ytService.getArtistRadioPlaylistId(artist);
+    if (!mounted) return;
+    if (radioId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Couldn't find that artist")));
+      return;
+    }
+    await collab.playNativeMix(listId: radioId);
+  }
+
+  /// Waits for the album's native queue to become active on the same track
+  /// that was playing before we switched, then seeks to resume where it left
+  /// off. Gives up silently after 5s (starting at track 1 is an acceptable
+  /// fallback, not an error) — there's no synchronous "track changed" signal,
+  /// only the debounced media_events push DashboardProvider already listens to.
+  void _seekOnceTrackMatches(DashboardProvider dashboard, String trackTitle, int resumeMs) {
+    final target = trackTitle.toLowerCase().trim();
+    bool done = false;
+    late VoidCallback listener;
+    Timer? timeoutTimer;
+    listener = () {
+      if (done) return;
+      final activeId = dashboard.nativeActiveQueueItemId.toString();
+      final active = dashboard.nativeQueue.firstWhere((q) => q['queueId'] == activeId, orElse: () => const {});
+      final activeTitle = (active['title'] ?? '').toLowerCase().trim();
+      if (activeTitle.isEmpty) return;
+      if (activeTitle == target || activeTitle.contains(target) || target.contains(activeTitle)) {
+        done = true;
+        dashboard.removeListener(listener);
+        timeoutTimer?.cancel();
+        dashboard.seekTo(resumeMs);
+      }
+    };
+    dashboard.addListener(listener);
+    timeoutTimer = Timer(const Duration(seconds: 5), () {
+      if (done) return;
+      done = true;
+      dashboard.removeListener(listener);
+    });
   }
 
   void _confirmClearQueue(CollabService collab) {
