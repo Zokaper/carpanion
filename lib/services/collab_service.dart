@@ -27,6 +27,7 @@ class CollabService extends ChangeNotifier {
   static const String _sessionKey = 'collab_session_id';
   static const String _enabledKey = 'collab_enabled';
   static const String _indexKey = 'collab_index';
+  static const String _detachedKey = 'collab_detached';
 
   final DashboardProvider _dashboard;
   final YouTubeService _yt;
@@ -39,8 +40,24 @@ class CollabService extends ChangeNotifier {
   // True while we are actively driving the queue (so Auto-DJ advances at song end).
   // Decoupled from _enabled so favorites playback works with Collab off.
   bool _playbackActive = false;
+  // Epoch ms of the last "external PREVIOUS at the start of the queue → restart
+  // to start" no-op (see _onDashboardUpdate). Our queue track is the ROOT of YT
+  // Music's own radio queue, so pressing PREVIOUS again there has nothing to go
+  // back to in YT Music's underlying playlist — on some presses YT Music restarts
+  // (handled above), but on others it instead wanders into its own autoplay/radio
+  // and surfaces an unrelated track. That foreign track would normally read as an
+  // external NEXT and advance our queue FORWARD — turning a second PREVIOUS press
+  // into a forward skip. If a foreign track appears shortly after this no-op, we
+  // treat it as fallout from that same PREVIOUS press and snap back to the CURRENT
+  // item instead of advancing.
+  int _restartedAtStartMs = 0;
   bool _allowEditing = false;
   bool _allowMediaControl = false;
+  // True when the user has manually released our queue's grip on playback (Detach):
+  // we keep mirroring/persisting state but stop reasserting the queue and stop
+  // auto-starting, so YT Music's own queue/autoplay can take over. Non-destructive —
+  // the queue and _currentPlayingIndex are preserved for Reattach.
+  bool _detached = false;
 
   // Tracked to detect changes coming from DashboardProvider notifications.
   String _lastTrack = '';
@@ -79,6 +96,9 @@ class CollabService extends ChangeNotifier {
   /// or the user plays something unrelated in YT Music.
   bool get playbackActive => _playbackActive;
 
+  /// True while the user has manually detached from our queue (see [detach]/[reattach]).
+  bool get detached => _detached;
+
   /// The album/track cover for the CURRENTLY PLAYING queue item — but only when
   /// the native now-playing track actually matches it. Lets the now-playing panel
   /// show OUR cover (e.g. the album cover) instead of YT Music's native art, which
@@ -113,6 +133,7 @@ class CollabService extends ChangeNotifier {
       }
       _enabled = prefs.getBool(_enabledKey) ?? false;
       _currentPlayingIndex = prefs.getInt(_indexKey) ?? -1;
+      _detached = prefs.getBool(_detachedKey) ?? false;
     } catch (e) {
       debugPrint('CollabService: failed to load persisted state: $e');
       if (_sessionId.isEmpty) _sessionId = _generateSessionId();
@@ -131,7 +152,7 @@ class CollabService extends ChangeNotifier {
     // YT Music is likely still playing the song; if it matches a queue item,
     // reconcile the highlight to it now (no playback triggered) and resume Auto-DJ.
     final restoredIdx = _matchQueueIndex(_lastTrack);
-    if (restoredIdx != -1) {
+    if (restoredIdx != -1 && !_detached) {
       _currentPlayingIndex = restoredIdx;
       _playbackActive = true;
     }
@@ -154,6 +175,7 @@ class CollabService extends ChangeNotifier {
       await prefs.setString(_sessionKey, _sessionId);
       await prefs.setBool(_enabledKey, _enabled);
       await prefs.setInt(_indexKey, _currentPlayingIndex);
+      await prefs.setBool(_detachedKey, _detached);
     } catch (e) {
       debugPrint('CollabService: failed to persist state: $e');
     }
@@ -293,6 +315,20 @@ class CollabService extends ChangeNotifier {
   void _onDashboardUpdate() {
     if (!_initialized) return;
 
+    // Detached: still mirror play state / track for the UI and passengers, but
+    // don't reassert or auto-advance the queue — see detach()/reattach().
+    if (_detached) {
+      if (_dashboard.isPlaying != _lastPlaying) {
+        _lastPlaying = _dashboard.isPlaying;
+        _socket?.emit('update_play_state', _lastPlaying);
+      }
+      if (_dashboard.currentTrack != _lastTrack) {
+        _lastTrack = _dashboard.currentTrack;
+        _socket?.emit('update_playing_status', _lastTrack);
+      }
+      return;
+    }
+
     // Sync play/pause state to passengers whenever it changes.
     if (_dashboard.isPlaying != _lastPlaying) {
       _lastPlaying = _dashboard.isPlaying;
@@ -322,7 +358,12 @@ class CollabService extends ChangeNotifier {
     final backwardReset = curPosMs < 2500 && (prevPosMs - curPosMs) > 1200;
     if (_playbackActive &&
         !_advancing &&
-        sincePlayMs > 2500 && // ignore position settling right after our own track change
+        // Was 2500ms when this only ran off a 1s poll; now dashboard state is
+        // pushed near-instantly by the native MediaController callback (see
+        // DashboardProvider._startMediaEventListener), so the settling window
+        // right after our own track change is shorter too. UNVERIFIED
+        // on-device — tune back up if real rapid-skip tests still misfire.
+        sincePlayMs > 1500 && // ignore position settling right after our own track change
         _currentPlayingIndex >= 0 &&
         _dashboard.currentTrack == _lastTrack && // same track (a restart, not a new song)
         backwardReset) {
@@ -331,6 +372,7 @@ class CollabService extends ChangeNotifier {
       if (prevPosMs > 4000 || _currentPlayingIndex == 0) {
         // >4s in (or nothing before it) → "previous" means restart-to-start. YT Music
         // already reset the track to 0, so just leave it there.
+        _restartedAtStartMs = DateTime.now().millisecondsSinceEpoch;
         debugPrint("Collab: external PREVIOUS → restart current to start");
       } else {
         // Near the start → go to the previous queue item.
@@ -361,10 +403,24 @@ class CollabService extends ChangeNotifier {
       // (YT Music autoplayed its own next-up) or an external NEXT (car / Bluetooth /
       // notification) — both surface as "a non-queue track is now playing" and both
       // mean "move the queue forward". (An external PREVIOUS is caught earlier as a
-      // same-track restart, so it does NOT reach here.) The queue is authoritative:
-      // advance to our next item so an external NEXT / song-end never "loses" it.
-      // playAt() re-arms _advancing while YT Music loads the target, so autoplay
-      // flashing non-matching tracks can't skip entries.
+      // same-track restart, so it does NOT reach here — EXCEPT when YT Music, having
+      // nothing before our queue's root track, wanders into its own autoplay instead
+      // of restarting; see _restartedAtStartMs.)
+      final recentRestart = _restartedAtStartMs != 0 &&
+          DateTime.now().millisecondsSinceEpoch - _restartedAtStartMs < 3000;
+      _restartedAtStartMs = 0;
+      if (recentRestart) {
+        // Fallout from the PREVIOUS press we just handled as a restart — snap
+        // back to the current item rather than reading this as a NEXT.
+        debugPrint("Collab Auto-DJ: foreign track after a start-of-queue PREVIOUS → "
+            "re-asserting current index $_currentPlayingIndex (not advancing)");
+        playAt(_currentPlayingIndex);
+        return;
+      }
+      // The queue is authoritative: advance to our next item so an external
+      // NEXT / song-end never "loses" it. playAt() re-arms _advancing while YT
+      // Music loads the target, so autoplay flashing non-matching tracks can't
+      // skip entries.
       if (_yt.currentQueue.length > _currentPlayingIndex + 1) {
         _currentPlayingIndex++;
         debugPrint("Collab Auto-DJ: reasserting queue → index $_currentPlayingIndex");
@@ -418,7 +474,7 @@ class CollabService extends ChangeNotifier {
 
   /// Auto-start playback when a song is added to an idle queue (nothing playing).
   void _maybeAutoStart() {
-    if (!_playbackActive && _currentPlayingIndex == -1 && _yt.currentQueue.isNotEmpty) {
+    if (!_detached && !_playbackActive && _currentPlayingIndex == -1 && _yt.currentQueue.isNotEmpty) {
       playAt(0);
     }
   }
@@ -531,6 +587,33 @@ class CollabService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Releases our queue's grip on playback without touching it: YT Music's own
+  /// queue/autoplay (and picking a song directly on the car screen) is no longer
+  /// fought by the reclaim logic in [_onDashboardUpdate]. Non-destructive — the
+  /// queue and [_currentPlayingIndex] are untouched, so [reattach] (or tapping
+  /// any queue row, via [playAt]) picks back up where it left off.
+  void detach() {
+    if (_detached) return;
+    _detached = true;
+    _persist();
+    notifyListeners();
+  }
+
+  /// Resumes driving the queue. If the currently-playing native track matches a
+  /// queue entry, syncs the highlight/Auto-DJ to it immediately; otherwise the
+  /// queue stays paused-in-place until the user taps a row (same as a cold restore).
+  void reattach() {
+    if (!_detached) return;
+    _detached = false;
+    final idx = _matchQueueIndex(_lastTrack);
+    if (idx != -1) {
+      _currentPlayingIndex = idx;
+      _playbackActive = true;
+    }
+    _persist();
+    notifyListeners();
+  }
+
   // --- Media controls ---
   void next() {
     if (_currentPlayingIndex != -1 && _yt.currentQueue.length > _currentPlayingIndex + 1) {
@@ -552,6 +635,7 @@ class CollabService extends ChangeNotifier {
   /// falling back to a launch intent if the session isn't reachable.
   void playAt(int index) {
     if (index < 0 || index >= _yt.currentQueue.length) return;
+    _detached = false; // any deliberate play means "drive the queue again"
     _currentPlayingIndex = index;
     _playbackActive = true;
     _lastPlayAtMs = DateTime.now().millisecondsSinceEpoch; // suppress PREVIOUS mis-detect while position settles
@@ -561,7 +645,12 @@ class CollabService extends ChangeNotifier {
     // would instantly skip to index+1. Cleared when `_matchQueueIndex` sees the
     // target load; self-heals after 10s if it never does.
     _advancing = true;
-    Future.delayed(const Duration(seconds: 10), () => _advancing = false);
+    // Was 10s to cover the worst case of a 1s poll missing the target load;
+    // with push events the real match (_matchQueueIndex, above) should clear
+    // _advancing within ~1-2s, so this is just the self-heal fallback if it
+    // never does. UNVERIFIED on-device — tune back up if this ever clears
+    // before YT Music actually finishes loading the target.
+    Future.delayed(const Duration(seconds: 5), () => _advancing = false);
     _persist();
     notifyListeners();
 
@@ -640,6 +729,7 @@ class CollabService extends ChangeNotifier {
   Future<void> clearQueue() async {
     _currentPlayingIndex = -1;
     _playbackActive = false;
+    _detached = false;
     await _yt.clearPlaylist();
     await _persist();
     notifyListeners();
@@ -651,6 +741,7 @@ class CollabService extends ChangeNotifier {
     _currentPlayingIndex = -1;
     _playbackActive = false;
     _enabled = false;
+    _detached = false;
     await _yt.clearPlaylist();
     await _persist();
 

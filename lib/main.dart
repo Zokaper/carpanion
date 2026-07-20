@@ -442,6 +442,14 @@ class DashboardProvider with ChangeNotifier {
   Timer? _dashcamTimer;
   Timer? _networkTimer;
 
+  // Real-time push events from YT Music's MediaController (native side), so
+  // now-playing/position updates land as fast as YT Music reports them instead
+  // of waiting up to 1s for the next poll — the poll (_startMediaPolling) keeps
+  // running as a fallback in case the event channel doesn't fire on a device.
+  static const EventChannel _mediaEventChannel = EventChannel('com.example.car_dashboard/media_events');
+  StreamSubscription? _mediaEventSub;
+  bool _isApplyingMediaEvent = false;
+
   void toggleUnit() {
     _isKmph = !_isKmph;
     notifyListeners();
@@ -532,6 +540,7 @@ class DashboardProvider with ChangeNotifier {
     await checkLocationSettingsAndPermissions();
     _startLocationUpdates();
     _startMediaPolling();
+    _startMediaEventListener();
     if (_featDashcam) _startDashcamPolling();
     _startNetworkPolling();
 
@@ -1072,6 +1081,56 @@ class DashboardProvider with ChangeNotifier {
     }
   }
 
+  void _startMediaEventListener() {
+    _mediaEventSub?.cancel();
+    _mediaEventSub = _mediaEventChannel.receiveBroadcastStream().listen((event) async {
+      if (_isDemoMode || _isApplyingMediaEvent || event is! Map) return;
+      _isApplyingMediaEvent = true;
+      try {
+        final title = (event['title'] ?? '').toString();
+        final artist = (event['artist'] ?? '').toString();
+        final album = (event['album'] ?? '').toString();
+        final isCurrentlyPlaying = event['isPlaying'] == true;
+        final posMs = (event['position'] as num?)?.toDouble();
+        var durMs = (event['duration'] as num?)?.toDouble();
+        bool changed = false;
+
+        if (_waitingForMusicToReturn && isCurrentlyPlaying) {
+          _waitingForMusicToReturn = false;
+          _triggerReturn();
+        }
+
+        if (title != _currentTrack || artist != _currentArtist || _isPlaying != isCurrentlyPlaying) {
+          if (title.isNotEmpty) _currentTrack = title;
+          if (artist.isNotEmpty) _currentArtist = artist;
+          if (album.isNotEmpty) _currentAlbum = album;
+          _isPlaying = isCurrentlyPlaying;
+          changed = true;
+          if (title.isNotEmpty && title != 'Not Playing') {
+            await _fetchNativeAlbumArt();
+          } else {
+            _currentAlbumArtBytes = null;
+          }
+        }
+
+        if (posMs != null && durMs != null) {
+          if (durMs <= 0) durMs = 1.0;
+          if (posMs != _mediaPosition || durMs != _mediaDuration) {
+            _mediaPosition = posMs;
+            _mediaDuration = durMs;
+            changed = true;
+          }
+        }
+
+        if (changed) notifyListeners();
+      } catch (e) {
+        debugPrint("Media event apply error: $e");
+      } finally {
+        _isApplyingMediaEvent = false;
+      }
+    }, onError: (e) => debugPrint("Media event stream error: $e"));
+  }
+
   bool _isFetchingMedia = false;
 
   void _startMediaPolling() {
@@ -1155,6 +1214,7 @@ class DashboardProvider with ChangeNotifier {
   void dispose() {
     _disposed = true;
     _mediaTimer?.cancel();
+    _mediaEventSub?.cancel();
     _dashcamTimer?.cancel();
     _networkTimer?.cancel();
     _callDurationTimer?.cancel();

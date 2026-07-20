@@ -5,7 +5,10 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.media.session.MediaSessionManager
+import android.media.session.MediaController
+import android.media.session.PlaybackState
 import android.media.MediaMetadata
+import io.flutter.plugin.common.EventChannel
 import android.content.Context
 import android.content.ComponentName
 import android.graphics.Bitmap
@@ -29,8 +32,54 @@ import android.media.AudioManager
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.car_dashboard/system"
+    private val MEDIA_EVENTS_CHANNEL = "com.example.car_dashboard/media_events"
     private var methodChannel: MethodChannel? = null
     private var phoneStateReceiver: BroadcastReceiver? = null
+
+    // A shadow MediaSession (active + STATE_PLAYING, no real audio focus) was
+    // tried here to see if we could intercept car/BT skip buttons directly
+    // instead of inferring from YT Music's session. VERDICT (2026-07-20,
+    // on-device): it doesn't coexist cleanly — YT Music's own session became
+    // unreachable via getActiveSessions() shortly after ours went active
+    // ("No YT Music media session found"), which cascaded into a runaway
+    // reassert loop (the queue rapid-fired through ~9 tracks in ~15s). Do not
+    // reintroduce a second active MediaSession in this app without a real fix
+    // for that session conflict — this is the ceiling on skip-detection
+    // accuracy referenced in AGENTS.md/STATUS.
+
+    // --- Real-time YT Music MediaController push events (replaces 1s Dart polling
+    // as the primary signal; the poll stays as a fallback). We don't own a
+    // MediaSession — car button KeyEvents still go straight to YT Music's own
+    // session, not us — so this can't intercept skips, but it collapses the
+    // ~1s polling latency that made a second rapid skip get mis-detected.
+    private var mediaEventSink: EventChannel.EventSink? = null
+    private var ytMediaController: MediaController? = null
+    private var mediaSessionManager: MediaSessionManager? = null
+    // onPlaybackStateChanged and onMetadataChanged fire as SEPARATE callbacks for a
+    // single track change — position resets to ~0 (playback state) a beat before the
+    // new title lands (metadata). Pushing on each callback directly exposes that
+    // half-updated snapshot (new position, OLD title) to Dart, which reads as an
+    // external PREVIOUS (same-track restart) even on a genuine NEXT. Debounce so we
+    // only push once both callbacks have settled to their final combined state.
+    private val mediaEventHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var pendingMediaEventPush: Runnable? = null
+    private fun schedulePushMediaEvent() {
+        pendingMediaEventPush?.let { mediaEventHandler.removeCallbacks(it) }
+        val r = Runnable { pushMediaEvent() }
+        pendingMediaEventPush = r
+        mediaEventHandler.postDelayed(r, 200)
+    }
+    private val ytControllerCallback = object : MediaController.Callback() {
+        override fun onPlaybackStateChanged(state: PlaybackState?) { schedulePushMediaEvent() }
+        override fun onMetadataChanged(metadata: MediaMetadata?) { schedulePushMediaEvent() }
+        override fun onSessionDestroyed() {
+            ytMediaController = null
+            tryBindYtController()
+        }
+    }
+    private val activeSessionsListener = MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
+        tryBindYtController(controllers)
+    }
 
     companion object {
         var instance: MainActivity? = null
@@ -40,6 +89,60 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
         instance = this
     }
+
+    /// Finds the YT Music controller (from [controllers] if given, else a fresh
+    /// query) and (re)registers our callback on it if it changed. Safe to call
+    /// repeatedly — no-ops if the controller is already the one we're watching.
+    private fun tryBindYtController(controllers: List<MediaController>? = null) {
+        try {
+            val list = controllers ?: run {
+                val msm = mediaSessionManager ?: return
+                val componentName = ComponentName(this@MainActivity, DashcamListenerService::class.java)
+                msm.getActiveSessions(componentName)
+            }
+            val ytController = list.firstOrNull { it.packageName == "com.google.android.apps.youtube.music" }
+            if (ytController?.sessionToken == ytMediaController?.sessionToken) return
+            ytMediaController?.unregisterCallback(ytControllerCallback)
+            ytMediaController = ytController
+            ytController?.registerCallback(ytControllerCallback)
+            pushMediaEvent()
+        } catch (e: Exception) {
+            android.util.Log.w("Carpanion", "tryBindYtController failed: ${e.message}")
+        }
+    }
+
+    /// Pushes the current YT Music now-playing/progress snapshot to Dart —
+    /// same fields the polled getCurrentMediaMetadata/getMediaProgress
+    /// endpoints expose, so the Dart side can treat this as "the same data,
+    /// just faster."
+    private fun pushMediaEvent() {
+        val controller = ytMediaController ?: return
+        val sink = mediaEventSink ?: return
+        try {
+            val md = controller.metadata
+            val ps = controller.playbackState
+            val title = md?.getString(MediaMetadata.METADATA_KEY_TITLE)
+                ?: md?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE) ?: ""
+            val artist = md?.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                ?: md?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) ?: ""
+            val album = md?.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: ""
+            val duration = md?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
+            val position = ps?.position ?: 0L
+            val isPlaying = ps?.state == PlaybackState.STATE_PLAYING
+            val event = mapOf(
+                "title" to title,
+                "artist" to artist,
+                "album" to album,
+                "position" to position,
+                "duration" to duration,
+                "isPlaying" to isPlaying
+            )
+            runOnUiThread { mediaEventSink?.success(event) }
+        } catch (e: Exception) {
+            android.util.Log.w("Carpanion", "pushMediaEvent failed: ${e.message}")
+        }
+    }
+
 
     fun notifyCallStateChanged(stateInt: Int, number: String?) {
         runOnUiThread {
@@ -53,6 +156,29 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, MEDIA_EVENTS_CHANNEL).setStreamHandler(
+            object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    mediaEventSink = events
+                    try {
+                        mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+                        val componentName = ComponentName(this@MainActivity, DashcamListenerService::class.java)
+                        mediaSessionManager?.addOnActiveSessionsChangedListener(activeSessionsListener, componentName)
+                        tryBindYtController()
+                    } catch (e: Exception) {
+                        android.util.Log.w("Carpanion", "media event onListen failed: ${e.message}")
+                    }
+                }
+                override fun onCancel(arguments: Any?) {
+                    pendingMediaEventPush?.let { mediaEventHandler.removeCallbacks(it) }
+                    mediaEventSink = null
+                    ytMediaController?.unregisterCallback(ytControllerCallback)
+                    ytMediaController = null
+                    mediaSessionManager?.removeOnActiveSessionsChangedListener(activeSessionsListener)
+                }
+            }
+        )
+
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
         methodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -671,6 +797,8 @@ class MainActivity : FlutterActivity() {
             unregisterReceiver(phoneStateReceiver)
             phoneStateReceiver = null
         }
+        ytMediaController?.unregisterCallback(ytControllerCallback)
+        mediaSessionManager?.removeOnActiveSessionsChangedListener(activeSessionsListener)
         super.onDestroy()
     }
 }

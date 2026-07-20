@@ -125,6 +125,15 @@ class _QueueTabState extends State<QueueTab> {
         ),
         if (ytService.currentQueue.isNotEmpty)
           _iconBtn(
+            icon: collab.detached ? Icons.link_off : Icons.link,
+            color: collab.detached ? Colors.orangeAccent : onSurface.withOpacity(0.5),
+            tooltip: collab.detached
+                ? 'Detached — tap to let our queue take back over'
+                : 'Detach — let YT Music\'s own queue take over',
+            onTap: () => collab.detached ? collab.reattach() : collab.detach(),
+          ),
+        if (ytService.currentQueue.isNotEmpty)
+          _iconBtn(
             icon: Icons.delete_sweep,
             color: Colors.redAccent,
             tooltip: 'Clear Queue',
