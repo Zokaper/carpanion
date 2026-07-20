@@ -223,9 +223,20 @@ class DashboardProvider with ChangeNotifier {
 
   /// Clears the played-history log — call when a fresh mix/radio is triggered
   /// (CollabService.playNativeMix) so a new session doesn't inherit the
-  /// previous one's already-played tracks.
+  /// previous one's already-played tracks. Also resets the tracked active
+  /// item: without this, whatever was playing before the switch (e.g. a
+  /// track from a totally different mix/album) gets wrongly archived into
+  /// the NEW mix's history on the next queue push — `_startMediaEventListener`
+  /// sees "the active item changed" and, not knowing this is a session
+  /// boundary rather than an organic advance, archives it as if it were part
+  /// of the new mix. Confirmed on-device: selecting Supermix while "Nothing's
+  /// New" was playing archived it as Supermix history, even though it was
+  /// never in that queue — tapping it to "go back" then failed since YT Music
+  /// has no such item in its live queue. Resetting to -1 here makes the
+  /// existing `_nativeActiveQueueItemId != -1` guard skip that first archive.
   void clearNativeQueueHistory() {
     _nativeQueueHistory.clear();
+    _nativeActiveQueueItemId = -1;
     notifyListeners();
   }
   bool get hasLocationPermission => _permission == LocationPermission.whileInUse || _permission == LocationPermission.always;

@@ -7,6 +7,29 @@ belongs in `AGENTS.md`, not here. When this file gets long, move older entries i
 
 ---
 
+## 2026-07-20 — Claude — V4.5 polish follow-up 2: fix wrong track archived into a new mix's history
+
+User report: selecting Supermix while "Nothing's New" was playing (from an unrelated album)
+started Supermix correctly, but "Nothing's New" got shown as if it were part of Supermix's
+history — and tapping it to go back didn't work, since it was never actually in that queue.
+
+Root cause (`main.dart`): `CollabService.playNativeMix` calls `DashboardProvider.
+clearNativeQueueHistory()` to reset history for the new mix, but that only cleared the history
+list — it left `_nativeActiveQueueItemId` pointing at whatever was active before. When the
+real queue-transition event arrived a moment later, `_startMediaEventListener`'s archiving
+logic saw "the active item changed" and, having no way to know this was a session boundary
+(new mix) rather than an organic same-mix advance, archived the old item into the (freshly
+cleared) history as if it belonged to the new mix.
+
+Fix: `clearNativeQueueHistory()` now also resets `_nativeActiveQueueItemId = -1`, which makes
+the archiving logic's existing `_nativeActiveQueueItemId != -1` guard skip that first archive
+after a fresh mix trigger — no new flag needed, reused the existing safety check. Verified
+on-device: played a Lana Del Rey album track ("Norman fucking Rockwell"), switched to Supermix,
+confirmed the album track does not appear anywhere in Supermix's queue/history and Supermix's
+own first track ("Born To Die") sits at the top with nothing above it.
+
+---
+
 ## 2026-07-20 — Claude — V4.5 polish follow-up: fix breakage from switching between dynamic queues
 
 User report: "when you press a dynamic queue then you press on another one" — Play Artist/Album,
