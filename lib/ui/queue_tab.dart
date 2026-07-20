@@ -111,7 +111,13 @@ class _QueueTabState extends State<QueueTab> {
     // second widget): on → drive/show the collab queue; off → passively
     // mirror YT Music's own queue. Sharing and queue-source are the same
     // concept from the user's perspective — nothing to share while passive.
-    return Row(
+    // Wrapped in FittedBox so the row scales down instead of overflowing when
+    // the 5th icon (Clear Queue, collab-only) appears — the fixed 48px tap
+    // targets add up to just over the panel width at 5 icons but fit at 4.
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerRight,
+      child: Row(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
         _iconBtn(
@@ -164,6 +170,7 @@ class _QueueTabState extends State<QueueTab> {
             onTap: () => _confirmClearQueue(collab),
           ),
       ],
+      ),
     );
   }
 

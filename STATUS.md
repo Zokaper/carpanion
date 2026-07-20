@@ -7,6 +7,39 @@ belongs in `AGENTS.md`, not here. When this file gets long, move older entries i
 
 ---
 
+## 2026-07-20 — Claude — V4.5 polish follow-up: fix breakage from switching between dynamic queues
+
+User report: "when you press a dynamic queue then you press on another one" — Play Artist/Album,
+next/previous, and a pixel overflow all broke. Reproduced on-device (real S25+) and found two
+distinct, pre-existing bugs (not introduced by the picker feature itself, but the picker made
+one of them visible/consequential):
+
+1. **Header pixel overflow** (`queue_tab.dart` `_buildHeader`): the icon row is 4 fixed-48px
+   icons in native mode but 5 in collab mode (an extra "Clear Queue" icon appears when
+   `!isNative && ytService.currentQueue.isNotEmpty`) — 5×48=240px doesn't fit the panel width
+   (~237.6px), a pre-existing latent bug that simply hadn't been triggered in prior testing
+   sessions. Confirmed trigger: tapping "Quick Picks" (which — per existing, intentional
+   architecture — goes through the old collab-queue path, not `playNativeMix`, since it's a
+   curated song shelf with no playlist id) switches to collab mode with a non-empty queue.
+   Fixed by wrapping the header `Row` in `FittedBox(fit: BoxFit.scaleDown)` so it scales down
+   instead of overflowing whenever the 5th icon appears.
+2. **Stale album metadata** (`main.dart` `_startMediaEventListener`): confirmed on-device that
+   after a fast track transition (Next button, or any native skip), "Play Album" could offer
+   the *previous* track's album. Root cause: the fast media_events push only updates
+   `_currentAlbum` when its own payload happens to carry a non-empty `album` field (not always
+   populated synchronously right after a skip); the slower polling loop that reliably re-fetches
+   album via `getCurrentMediaMetadata` is gated on the same title/artist-changed check that the
+   fast listener already satisfies first, so it never got a chance to correct it — `_currentAlbum`
+   could stay wrong for the rest of that song. Fixed by having the event listener fall back to
+   the same `getCurrentMediaMetadata` platform call when its own `album` field is empty.
+   Confirmed fixed on-device: re-tapping immediately after a skip now shows the correct album.
+
+Verified next/previous and the Play Album/Artist picker are unaffected by native→native mix
+switches (tested Supermix → Replay Mix; both worked cleanly, no overflow). `flutter analyze`
+clean on all three touched files.
+
+---
+
 ## 2026-07-20 — Claude — V4.5 polish: native queue reflow, Supermix+QuickPicks, album/artist re-tap picker
 
 Three requested polish items ahead of V5, all verified on-device (real S25+ over wireless adb):

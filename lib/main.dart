@@ -1128,9 +1128,27 @@ class DashboardProvider with ChangeNotifier {
         }
 
         if (title != _currentTrack || artist != _currentArtist || _isPlaying != isCurrentlyPlaying) {
+          final trackChanged = title.isNotEmpty && title != _currentTrack;
           if (title.isNotEmpty) _currentTrack = title;
           if (artist.isNotEmpty) _currentArtist = artist;
-          if (album.isNotEmpty) _currentAlbum = album;
+          if (album.isNotEmpty) {
+            _currentAlbum = album;
+          } else if (trackChanged) {
+            // This push didn't carry an album (native metadata not always ready
+            // synchronously right after a skip) — the slower media-polling loop
+            // normally back-fills it via getCurrentMediaMetadata, but that poll
+            // is gated on this same title/artist-changed check, which we just
+            // satisfied first, so it would never run for this track and
+            // _currentAlbum would stay stuck on the PREVIOUS song for the rest
+            // of this one (confirmed on-device: Play Album offered the prior
+            // track's album). Fetch it directly here instead.
+            try {
+              final meta = await platform.invokeMethod('getCurrentMediaMetadata');
+              if (meta is Map && meta['album'] != null) {
+                _currentAlbum = meta['album'].toString();
+              }
+            } catch (_) {}
+          }
           _isPlaying = isCurrentlyPlaying;
           changed = true;
           if (title.isNotEmpty && title != 'Not Playing') {
