@@ -163,21 +163,29 @@ App-lifetime service (survives navigation; the collab/queue tab is a thin view o
   (`collab_queue`).
 - **`playAt(index)`** → sets `_currentPlayingIndex`, `_playbackActive = true`, invokes
   `playFromMediaSession`; falls back to a launch intent if the MediaSession is unreachable.
-- **`playNativeMix({listId, videoId})`** → sets `_queueSource = QueueSource.native`,
-  disables collab sharing, clears native queue history, calls the native `playNativeMix`
-  channel method; falls back to `_playViaIntent` (launch-intent URL, now `listId`-aware) if
-  YT Music's session isn't reachable yet (cold-start case — this was the "Supermix button
-  stopped working" bug).
+- **`playNativeMix({listId, videoId})`** (both optional, at least one required) → sets
+  `_queueSource = QueueSource.native`, disables collab sharing, clears native queue history,
+  calls the native `playNativeMix` channel method; falls back to `_playViaIntent` (launch-intent
+  URL, now `listId`-aware) if YT Music's session isn't reachable yet (cold-start case — this was
+  the "Supermix button stopped working" bug). `videoId`-only (no `listId`) plays a single track
+  and lets YT Music build its own autoplay radio around it — used for single-song favorites
+  (V4.5.1); the native Kotlin handler builds a bare `watch?v=<videoId>` (no `list=`) in that case.
 - **Auto-DJ** (`_onDashboardUpdate`, listens to `DashboardProvider`, **collab-queue path
   only**): when the playing track (from native polling) leaves the queue (song ended → YT
   autoplay), it advances to the next queue item. **Gated on `_playbackActive`, NOT on
   collab being enabled** — so favorites playback auto-advances even with Collab off. Also
   re-syncs the highlighted index by fuzzy title-match and emits `update_playing_status` /
   `update_play_state`.
-- **Favorites entry points**: `playFavoriteSong({videoId,title,artist,thumbnail})` (collab
-  queue) and `loadQueueAndPlay(List<songs>)` (collab queue, still used for album favorites)
-  — both **replace** the queue and play from 0. Mixes/artist-radio go through
-  `playNativeMix` instead (native queue).
+- **Favorites entry points** (V4.5.1: all now native — collab is a separate, deliberately
+  opted-into feature for passengers, unrelated to favorites): song favorites call
+  `playNativeMix(videoId:)`; album favorites call `playNativeMix(listId:)` with the album's
+  playlist id (`getAlbumPlaylistId`, falls back to `loadQueueAndPlay` if no id found); artist
+  radio calls `playNativeMix(listId:)` with the radio id (`getArtistRadioPlaylistId`); artist
+  "songs only" mode calls `playNativeMix(listId:)` with the artist's own Songs-shelf playlist id
+  (`getArtistSongsPlaylistId` — strips the shelf's browse-id "VL" prefix down to the underlying
+  watch-playlist id, or `playFromUri` silently fails to load it; falls back to the old
+  `getArtistTracks`/`loadQueueAndPlay` weighted-shuffle path if no id found). `loadQueueAndPlay`
+  (collab queue) now only serves as that fallback and for Quick Picks (see below).
 - **Persistence** (`SharedPreferences`): `collab_session_id`, `collab_enabled`,
   `collab_index`, `_queueSourceKey`. On restart it does a **silent restore**: re-selects
   the saved song (matching what YT Music is already playing) but does NOT replay it (would
@@ -453,9 +461,12 @@ list, or a track auto-advancing, calls `_followNowPlaying()` to recenter the scr
   - Album favorites now also use the native mirror: `getAlbumPlaylistId` resolves the album's
     own watch-playlist id (`OLAK5uy…`/`VL…`) and `playNativeMix` triggers it, same as
     mixes/radio. Falls back to the old `getAlbumTracks` → `loadQueueAndPlay` (collab queue) if
-    no playlist id is found. Left on the collab queue on purpose (no native list to trigger):
-    artist "own songs" mode (`getArtistTracks`, our own weighted shuffle) and Quick Picks (a
-    curated song shelf, not a playlist id).
+    no playlist id is found.
+  - **V4.5.1: single-song favorites and artist "songs only" mode also moved to native** (see
+    "🎵 Core Idea" / `CollabService` above) — per user, collab is a separate opt-in feature for
+    passengers, not something favorites should share a queue with just to support add-after.
+    Only **Quick Picks** stays on the collab queue on purpose (a curated song shelf with no
+    playlist id — nothing for YT Music to natively trigger).
 - **Playing highlight**: the collab-queue path still uses fuzzy title-matching (native track
   title vs stored queue title) — unusual titles can occasionally mis-highlight. The native-mirror
   path doesn't have this problem — it matches exactly on `activeQueueItemId` from YT Music.

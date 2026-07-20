@@ -719,8 +719,8 @@ class MainActivity : FlutterActivity() {
                     try {
                         val videoId = call.argument<String>("videoId")
                         val listId = call.argument<String>("listId")
-                        if (listId.isNullOrEmpty()) {
-                            result.success(mapOf("success" to false, "error" to "listId required"))
+                        if (listId.isNullOrEmpty() && videoId.isNullOrEmpty()) {
+                            result.success(mapOf("success" to false, "error" to "listId or videoId required"))
                             return@setMethodCallHandler
                         }
                         val mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
@@ -731,8 +731,13 @@ class MainActivity : FlutterActivity() {
                             result.success(mapOf("success" to false, "error" to "No YT Music media session found"))
                             return@setMethodCallHandler
                         }
-                        val uri = if (!videoId.isNullOrEmpty())
+                        // videoId-only (no listId): a single track, no playlist to hand
+                        // YT Music — it builds its own autoplay radio around it, which we
+                        // still just passively mirror same as any other native queue.
+                        val uri = if (!videoId.isNullOrEmpty() && !listId.isNullOrEmpty())
                             android.net.Uri.parse("https://music.youtube.com/watch?v=$videoId&list=$listId")
+                        else if (!videoId.isNullOrEmpty())
+                            android.net.Uri.parse("https://music.youtube.com/watch?v=$videoId")
                         else
                             android.net.Uri.parse("https://music.youtube.com/watch?list=$listId")
                         val extras = android.os.Bundle()

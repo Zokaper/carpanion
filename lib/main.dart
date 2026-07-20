@@ -2514,12 +2514,12 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
     if (type == 'song') {
       final vid = fav['videoId'] ?? '';
       if (vid.isNotEmpty) {
-        collab.playFavoriteSong(
-          videoId: vid,
-          title: fav['title'] ?? '',
-          artist: fav['subtitle'] ?? '',
-          thumbnail: fav['thumbnail'] ?? '',
-        );
+        // V4.5: single songs no longer need the app-owned collab queue — that
+        // was only there so a passenger could add more tracks after it, but
+        // collab is a separate, deliberately-opted-into feature now (per
+        // user), irrelevant to favorites. Trigger it natively and let YT
+        // Music build its own autoplay radio around it, same as mixes/radio.
+        await collab.playNativeMix(videoId: vid);
         _goToQueueView();
         return;
       }
@@ -2559,6 +2559,16 @@ class _FavoritesSidebarState extends State<FavoritesSidebar> {
           return;
         }
       } else {
+        // V4.5: trigger the artist's own "Songs" playlist NATIVELY, same as
+        // radio/albums — trades the app's weighted-random shuffle for YT
+        // Music's own playlist order (per user request).
+        final songsPlaylistId = await yt.getArtistSongsPlaylistId(name);
+        if (songsPlaylistId != null && songsPlaylistId.isNotEmpty) {
+          await collab.playNativeMix(listId: songsPlaylistId);
+          _goToQueueView();
+          return;
+        }
+        // Fallback: no native songs-playlist id found — old pre-fetch-and-drive path.
         final tracks = await yt.getArtistTracks(name);
         if (tracks.isNotEmpty) {
           await collab.loadQueueAndPlay(tracks);

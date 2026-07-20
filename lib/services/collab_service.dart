@@ -489,19 +489,6 @@ class CollabService extends ChangeNotifier {
 
   // --- Favorites playback entry points (replace the queue and play "now") ---
 
-  /// Plays a single favorited song directly (no YT Music flash).
-  Future<void> playFavoriteSong({
-    required String videoId,
-    required String title,
-    String artist = '',
-    String thumbnail = '',
-  }) async {
-    await _yt.replaceQueue([
-      {'videoId': videoId, 'title': title, 'artist': artist, 'thumbnail': thumbnail},
-    ]);
-    playAt(0);
-  }
-
   /// Replaces the queue with a resolved track list (album tracks / artist radio)
   /// and starts playing from the top. When [resolveAudio] is set (albums), the
   /// video (OMV) ids YT Music hands out for tracks with a music video are swapped
@@ -625,12 +612,17 @@ class CollabService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Triggers a mix/radio/playlist to play NATIVELY in YT Music (V4.5 pivot) —
-  /// the app issues this one command and then only mirrors whatever queue
-  /// results (DashboardProvider.nativeQueue); it never builds its own track
-  /// list or drives playback for this path, so there's no reassert/inference
-  /// to race against YT Music's own skip handling.
-  Future<void> playNativeMix({required String listId, String? videoId}) async {
+  /// Triggers a mix/radio/playlist/single-song to play NATIVELY in YT Music
+  /// (V4.5 pivot) — the app issues this one command and then only mirrors
+  /// whatever queue results (DashboardProvider.nativeQueue); it never builds
+  /// its own track list or drives playback for this path, so there's no
+  /// reassert/inference to race against YT Music's own skip handling.
+  /// [listId] is a playlist/mix/radio id; [videoId] alone (no listId) plays a
+  /// single track and lets YT Music build its own autoplay radio around it —
+  /// at least one of the two is required.
+  Future<void> playNativeMix({String? listId, String? videoId}) async {
+    assert((listId != null && listId.isNotEmpty) || (videoId != null && videoId.isNotEmpty),
+        'playNativeMix requires a listId or a videoId');
     _queueSource = QueueSource.native;
     _enabled = false; // nothing collab-driven to share while mirroring YT Music
     _dashboard.clearNativeQueueHistory(); // fresh mix — don't carry over the last one's played history
@@ -638,8 +630,8 @@ class CollabService extends ChangeNotifier {
     notifyListeners();
     try {
       final result = await DashboardProvider.platform.invokeMethod('playNativeMix', {
-        'listId': listId,
-        if (videoId != null) 'videoId': videoId,
+        if (listId != null && listId.isNotEmpty) 'listId': listId,
+        if (videoId != null && videoId.isNotEmpty) 'videoId': videoId,
       });
       debugPrint('Collab: playNativeMix result: $result');
       final success = result is Map && result['success'] == true;

@@ -7,6 +7,45 @@ belongs in `AGENTS.md`, not here. When this file gets long, move older entries i
 
 ---
 
+## 2026-07-20 — Claude — V4.5: move single-song favorites and artist-only mode onto native too
+
+Per user: collab is now understood as its own separate feature (only turned on when passengers
+are in the car, building their own playlist from scratch, unrelated to favorites) — so single-song
+favorites no longer need the app-owned collab queue; that was only there so a passenger could
+queue-add after it. Also asked whether "Play Artist → artist only" (not radio) could go native.
+
+**Native single-song playback** — `MainActivity.kt`'s `"playNativeMix"` handler required `listId`;
+relaxed it to accept `videoId` alone (builds a bare `watch?v=<videoId>`, no `list=`, so YT Music
+builds its own autoplay radio around it — same passive-mirror idea as everything else native).
+`CollabService.playNativeMix` signature changed from `{required String listId}` to
+`{String? listId, String? videoId}` (asserts at least one). `main.dart`'s song-favorite branch now
+calls `collab.playNativeMix(videoId: vid)` instead of the old `collab.playFavoriteSong(...)`
+(removed — collab_service.dart's `playFavoriteSong`, now unused, deleted).
+
+**Artist-only mode → native** — added `YouTubeService.getArtistSongsPlaylistId(artist)` (resolves
+the artist's own "Songs" shelf playlist id, reusing `_findSongsPlaylistId` — the same lookup
+`getArtistTracks` already did internally). `main.dart`'s artist non-radio branch now tries this
+first via `playNativeMix(listId: ...)`, falling back to the old `getArtistTracks`/`loadQueueAndPlay`
+path if no id is found. **Trade-off surfaced to and accepted by the user**: this loses the app's
+own weighted-random shuffle (`getArtistTracks`'s `_weightedShuffle` — a different order each tap,
+weighted toward popular songs) in favor of YT Music's fixed playlist order.
+
+**Bug caught + fixed during on-device testing**: `_findSongsPlaylistId` returns a browse id
+("VLOLAK5uy…", for paging through the shelf), not a watch-playlist id — passing it straight to
+`playNativeMix` made `playFromUri` report `success: true` but YT Music silently failed to load it
+and kept playing whatever was already on. Same normalization the home-tile mix path already
+applies (`main.dart`'s `pid.startsWith('VL') ? pid.substring(2) : pid`) was missing here;
+`getArtistSongsPlaylistId` now strips a leading "VL" itself before returning.
+
+Verified on-device: a song favorite now shows NATIVE and lets YT Music's own autoplay take over
+after it (confirmed with "the cure" → Lana Del Rey "Radio" autoplay); "Play Artist" (artist-only)
+on Nessa Barrett now plays her own Songs playlist natively (P*RNSTAR → Love Looks Pretty On You →
+…), confirmed only after finding/fixing the VL-prefix bug above — first attempt silently kept
+playing the previous track. `flutter analyze` clean; Kotlin change compiles (verified via
+`flutter build apk --debug`).
+
+---
+
 ## 2026-07-20 — Claude — V4.5 polish follow-up 2: fix wrong track archived into a new mix's history
 
 User report: selecting Supermix while "Nothing's New" was playing (from an unrelated album)

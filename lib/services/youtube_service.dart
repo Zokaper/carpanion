@@ -627,6 +627,39 @@ class YouTubeService extends ChangeNotifier {
     }
   }
 
+  /// Resolves the artist's own "Songs" playlist id (VLOLAK5uy…, via the same
+  /// [_findSongsPlaylistId] shelf lookup [getArtistTracks] uses) for native
+  /// triggering via [CollabService.playNativeMix] — "artist only" mode (not
+  /// radio). Native means YT Music plays it in its own playlist order; the
+  /// app-side weighted-random shuffle [getArtistTracks] does is not applied.
+  Future<String?> getArtistSongsPlaylistId(String artist) async {
+    try {
+      final data = await _innertubePost('search', {'query': artist});
+      final artistId = _findBrowseId(data, 'UC');
+      if (artistId == null) {
+        debugPrint('getArtistSongsPlaylistId: no artist browseId for "$artist"');
+        return null;
+      }
+      final browse = await _innertubePost('browse', {'browseId': artistId});
+      final songsId = _findSongsPlaylistId(browse);
+      if (songsId == null) {
+        debugPrint('getArtistSongsPlaylistId: no songs playlist for "$artist"');
+        return null;
+      }
+      // _findSongsPlaylistId returns a BROWSE id ("VLOLAK5uy…" — for paging
+      // through the shelf), not a watch-playlist id — strip the "VL" so
+      // playNativeMix's list= param resolves (same normalization the home-tile
+      // mix path applies to its browseEndpoint.browseId case, main.dart's
+      // `pid.startsWith('VL') ? pid.substring(2) : pid`). Confirmed on-device:
+      // passing the raw "VL…" id let playFromUri report success but YT Music
+      // silently failed to load it and kept playing whatever was already on.
+      return songsId.startsWith('VL') ? songsId.substring(2) : songsId;
+    } catch (e) {
+      debugPrint('getArtistSongsPlaylistId failed: $e');
+      return null;
+    }
+  }
+
   // --- Personalized home feed (authenticated) → mix tiles ---------------------
   //
   // ⚠️ Best-effort parse of FEmusic_home; TUNE against the real JSON on-device
