@@ -16,7 +16,6 @@ import 'package:flutter_contacts/flutter_contacts.dart';
 import 'ui/settings_screen.dart';
 import 'ui/sidebar_tabs.dart';
 import 'ui/phone_tab.dart';
-import 'ui/welcome_overlay.dart';
 import 'package:share_handler/share_handler.dart';
 import 'services/youtube_service.dart';
 import 'services/collab_service.dart';
@@ -40,7 +39,18 @@ void main() {
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => DashboardProvider()..initialize()),
-        ChangeNotifierProvider(create: (_) => DynamicThemeProvider()),
+        // Feeds the current album art + play state into the theme provider
+        // on every DashboardProvider update, so accent modes that react to
+        // media (album-art tint) stay in sync — cheap no-op unless the art
+        // or play state actually changed (see updateMediaContext).
+        ChangeNotifierProxyProvider<DashboardProvider, DynamicThemeProvider>(
+          create: (_) => DynamicThemeProvider(),
+          update: (_, dashboard, theme) => theme!
+            ..updateMediaContext(
+              albumArt: dashboard.currentAlbumArtBytes,
+              isPlaying: dashboard.isPlaying,
+            ),
+        ),
         ChangeNotifierProvider(create: (_) => YouTubeService()),
         // Collab engine — lives app-wide so it survives navigation and persists
         // across restarts. Reads the two providers above (declared earlier).
@@ -72,6 +82,126 @@ class MyApp extends StatelessWidget {
   }
 }
 
+/// A single OSM way's geometry + tags, as returned by an Overpass `out geom;` query.
+class _WayGeom {
+  final List<double> lats;
+  final List<double> lons;
+  final Map<String, dynamic> tags;
+  _WayGeom({required this.lats, required this.lons, required this.tags});
+}
+
+/// Result of local map-matching: the winning way's tags plus the bearing of
+/// the specific segment closest to the car (needed for forward/backward
+/// maxspeed resolution).
+class _MatchedWay {
+  final Map<String, dynamic> tags;
+  final double segBearing;
+  _MatchedWay(this.tags, this.segBearing);
+}
+
+/// Shortest distance in meters from point P to segment AB, via a local
+/// equirectangular projection centered on P. Adequate for the short
+/// (tens-of-meters) segments involved in road map-matching.
+double _pointToSegmentDistanceMeters(
+    double plat, double plon, double alat, double alon, double blat, double blon) {
+  const double metersPerDegLat = 111320.0;
+  final double metersPerDegLon = 111320.0 * math.cos(plat * math.pi / 180.0);
+
+  final double ax = (alon - plon) * metersPerDegLon;
+  final double ay = (alat - plat) * metersPerDegLat;
+  final double bx = (blon - plon) * metersPerDegLon;
+  final double by = (blat - plat) * metersPerDegLat;
+
+  final double dx = bx - ax;
+  final double dy = by - ay;
+  final double lenSq = dx * dx + dy * dy;
+  double t = lenSq > 0 ? (-ax * dx - ay * dy) / lenSq : 0.0;
+  t = t.clamp(0.0, 1.0);
+  final double cx = ax + t * dx;
+  final double cy = ay + t * dy;
+  return math.sqrt(cx * cx + cy * cy);
+}
+
+/// Picks the OSM way the car is actually on out of nearby maxspeed-tagged
+/// candidates, using nearest-segment distance plus (when moving) heading
+/// alignment against the way's local bearing — replaces the old "just take
+/// whatever Overpass returned first" behavior.
+_MatchedWay? _selectBestWay(
+    List<_WayGeom> ways, double lat, double lon, double heading, double speedMps) {
+  const double maxDistM = 35.0;
+  const double headingGateSpeedMps = 2.5;
+  const double maxHeadingDiffDeg = 45.0;
+  final bool canGateOnHeading = speedMps > headingGateSpeedMps && heading >= 0;
+
+  _WayGeom? bestWay;
+  double bestDist = double.infinity;
+  double bestBearing = 0.0;
+
+  for (final way in ways) {
+    if (way.lats.length < 2) continue;
+    double wayMinDist = double.infinity;
+    double wayBearingAtMin = 0.0;
+
+    for (int i = 0; i < way.lats.length - 1; i++) {
+      final double segDist = _pointToSegmentDistanceMeters(
+          lat, lon, way.lats[i], way.lons[i], way.lats[i + 1], way.lons[i + 1]);
+      if (segDist < wayMinDist) {
+        wayMinDist = segDist;
+        wayBearingAtMin =
+            Geolocator.bearingBetween(way.lats[i], way.lons[i], way.lats[i + 1], way.lons[i + 1]);
+      }
+    }
+
+    if (wayMinDist > maxDistM) continue;
+
+    if (canGateOnHeading) {
+      final double carMod = ((heading % 180) + 180) % 180;
+      final double wayMod = ((wayBearingAtMin % 180) + 180) % 180;
+      double diff = (carMod - wayMod).abs();
+      if (diff > 90) diff = 180 - diff;
+      if (diff > maxHeadingDiffDeg) continue;
+    }
+
+    if (wayMinDist < bestDist) {
+      bestDist = wayMinDist;
+      bestWay = way;
+      bestBearing = wayBearingAtMin;
+    }
+  }
+
+  if (bestWay == null) return null;
+  return _MatchedWay(bestWay.tags, bestBearing);
+}
+
+/// Unit- and direction-aware `maxspeed` extraction. Always returns canonical
+/// km/h (or null for "no usable data") so display-unit conversion happens in
+/// exactly one place downstream.
+int? _parseMaxspeedToKmph(Map<String, dynamic> tags, {double? heading, double? wayBearing}) {
+  String? raw = tags['maxspeed'] as String?;
+
+  final String? fwd = tags['maxspeed:forward'] as String?;
+  final String? bwd = tags['maxspeed:backward'] as String?;
+  if ((fwd != null || bwd != null) && heading != null && wayBearing != null) {
+    final double diff = ((heading - wayBearing) % 360 + 360) % 360;
+    final bool travelingForward = diff < 90 || diff > 270;
+    final String? directional = travelingForward ? fwd : bwd;
+    if (directional != null) raw = directional;
+  }
+
+  if (raw == null) return null;
+  final String v = raw.trim().toLowerCase();
+  if (v.isEmpty || v == 'none' || v == 'walk' || v == 'signals') return null;
+
+  final match = RegExp(r'(\d+(?:\.\d+)?)').firstMatch(v);
+  if (match == null) return null;
+  final double numeric = double.parse(match.group(1)!);
+
+  if (v.contains('mph')) {
+    return (numeric * 1.60934).round();
+  }
+  return numeric.round();
+}
+
 class DashboardProvider with ChangeNotifier {
   bool _isKmph = true;
   bool _isDemoMode = false;
@@ -80,22 +210,8 @@ class DashboardProvider with ChangeNotifier {
   bool _serviceEnabled = false;
   String _errorMessage = '';
 
-  bool _showWelcomeUI = false;
-  bool get showWelcomeUI => _showWelcomeUI;
-
-  void dismissWelcomeUI() {
-    _showWelcomeUI = false;
-    updateLastActiveTime();
-    notifyListeners();
-  }
-
-  void forceShowWelcomeUI() {
-    _showWelcomeUI = true;
-    notifyListeners();
-  }
-
-  // Fullscreen Settings page (rendered as a top-level Stack layer, like the
-  // welcome overlay) instead of a floating dialog.
+  // Fullscreen Settings page (rendered as a top-level Stack layer)
+  // instead of a floating dialog.
   bool _showSettingsUI = false;
   bool get showSettingsUI => _showSettingsUI;
 
@@ -106,44 +222,6 @@ class DashboardProvider with ChangeNotifier {
 
   void dismissSettingsUI() {
     _showSettingsUI = false;
-    notifyListeners();
-  }
-
-  Future<void> updateLastActiveTime() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('lastActiveTime', DateTime.now().millisecondsSinceEpoch);
-  }
-
-  Future<void> checkNewDrive() async {
-    if (!_featWelcomeOverlay) {
-      _showWelcomeUI = false;
-      return;
-    }
-    final prefs = await SharedPreferences.getInstance();
-    final lastTime = prefs.getInt('lastActiveTime');
-    bool shouldShow = false;
-
-    if (lastTime != null) {
-      final lastActiveDate = DateTime.fromMillisecondsSinceEpoch(lastTime);
-      final diff = DateTime.now().difference(lastActiveDate);
-      if (diff.inMinutes >= 10) {
-        bool isNavigating = false;
-        try {
-          isNavigating = await platform.invokeMethod<bool>('isNavigating') ?? false;
-        } catch (e) {}
-
-        if (!_isPlaying && !isNavigating && _speed < 1.39) {
-          shouldShow = true;
-        }
-      }
-    } else {
-      shouldShow = true;
-    }
-
-    _showWelcomeUI = shouldShow;
-    if (!shouldShow) {
-      updateLastActiveTime();
-    }
     notifyListeners();
   }
 
@@ -176,15 +254,29 @@ class DashboardProvider with ChangeNotifier {
   bool _dashcamDesiredOn = false;
   int _lastDashcamStartAttempt = 0; // epoch ms; rate-limits auto-restart
   String _speedLimit = '?';
-  Position? _lastSpeedLimitPosition;
+  int? _speedLimitKmph; // canonical km/h value; _speedLimit is derived for display
+  Position? _lastStreetNameFallbackPosition;
+  List<_WayGeom>? _speedLimitCache;
+  Position? _speedLimitCacheAnchor;
+  int _speedLimitCacheFetchedAtMs = 0;
+  int? _pendingSpeedLimitKmph;
+  int _pendingSpeedLimitConfirmCount = 0;
+  int _speedLimitMissCount = 0;
+  int _lastMatchedStreetNameMs = 0;
+  static const double _speedLimitCacheRadiusM = 450.0;
+  static const int _speedLimitCacheMaxAgeMs = 10 * 60 * 1000;
   int? _weatherTempC; // rounded °C from Open-Meteo, null until first fetch
   int? _weatherCode; // WMO weather code
   int _lastWeatherFetch = 0; // epoch ms; throttles the ~15-min refresh
   double _speed = 0.0;
+  double _displaySpeed = 0.0; // forward-extrapolated between real GPS fixes
+  double _speedAccelEstimate = 0.0; // m/s^2, from the last two real fixes
+  int _lastSpeedFixMs = 0;
   double _accuracy = 0.0;
   double _altitude = 0.0;
   double _heading = 0.0;
   String _streetName = 'Scanning...';
+  Timer? _speedExtrapolationTimer;
 
   double _mediaPosition = 0.0;
   double _mediaDuration = 1.0;
@@ -208,6 +300,7 @@ class DashboardProvider with ChangeNotifier {
 
   bool get isKmph => _isKmph;
   double get speed => _speed;
+  double get displaySpeed => _displaySpeed;
   double get accuracy => _accuracy;
   double get altitude => _altitude;
   double get heading => _heading;
@@ -316,6 +409,7 @@ class DashboardProvider with ChangeNotifier {
   bool get dashcamRecording => _dashcamRecording;
   bool get dashcamDesiredOn => _dashcamDesiredOn;
   String get speedLimit => _speedLimit;
+  int? get speedLimitKmph => _speedLimitKmph;
   bool get isDemoMode => _isDemoMode;
   bool get isPlaying => _isPlaying;
   LocationPermission get permission => _permission;
@@ -351,8 +445,6 @@ class DashboardProvider with ChangeNotifier {
   bool _featWeather = true;
   bool _featSpeedWarning = true;
   bool _featDashcam = true;
-  bool _featWelcomeOverlay = true;
-  bool _featMapsAutolaunch = true;
   bool _featNotifications = true;
   bool _featShareFavorites = true;
   int _phoneMode = 1; // 0=Off, 1=In-app only, 2=Full (default dialer)
@@ -361,8 +453,6 @@ class DashboardProvider with ChangeNotifier {
   bool get featWeather => _featWeather;
   bool get featSpeedWarning => _featSpeedWarning;
   bool get featDashcam => _featDashcam;
-  bool get featWelcomeOverlay => _featWelcomeOverlay;
-  bool get featMapsAutolaunch => _featMapsAutolaunch;
   bool get featNotifications => _featNotifications;
   bool get featShareFavorites => _featShareFavorites;
   int get phoneMode => _phoneMode;
@@ -372,8 +462,6 @@ class DashboardProvider with ChangeNotifier {
   static const String _kFeatSpeedWarning = 'feat_speed_warning';
   static const String _kFeatDashcam = 'feat_dashcam';
   static const String _kDashcamDesiredOn = 'dashcam_desired_on';
-  static const String _kFeatWelcomeOverlay = 'feat_welcome_overlay';
-  static const String _kFeatMapsAutolaunch = 'feat_maps_autolaunch';
   static const String _kFeatNotifications = 'feat_notifications';
   static const String _kFeatShareFavorites = 'feat_share_favorites';
   static const String _kFeatAdaptiveBrightness = 'feat_adaptive_brightness';
@@ -386,8 +474,6 @@ class DashboardProvider with ChangeNotifier {
     _featSpeedWarning = prefs.getBool(_kFeatSpeedWarning) ?? true;
     _featDashcam = prefs.getBool(_kFeatDashcam) ?? true;
     _dashcamDesiredOn = prefs.getBool(_kDashcamDesiredOn) ?? false;
-    _featWelcomeOverlay = prefs.getBool(_kFeatWelcomeOverlay) ?? true;
-    _featMapsAutolaunch = prefs.getBool(_kFeatMapsAutolaunch) ?? true;
     _featNotifications = prefs.getBool(_kFeatNotifications) ?? true;
     _featShareFavorites = prefs.getBool(_kFeatShareFavorites) ?? true;
     _isAdaptiveBrightness =
@@ -433,21 +519,6 @@ class DashboardProvider with ChangeNotifier {
     await _persistBool(_kFeatDashcam, v);
   }
 
-  Future<void> setFeatWelcomeOverlay(bool v) async {
-    if (_featWelcomeOverlay == v) return;
-    _featWelcomeOverlay = v;
-    if (!v) _showWelcomeUI = false;
-    notifyListeners();
-    await _persistBool(_kFeatWelcomeOverlay, v);
-  }
-
-  Future<void> setFeatMapsAutolaunch(bool v) async {
-    if (_featMapsAutolaunch == v) return;
-    _featMapsAutolaunch = v;
-    notifyListeners();
-    await _persistBool(_kFeatMapsAutolaunch, v);
-  }
-
   Future<void> setFeatNotifications(bool v) async {
     if (_featNotifications == v) return;
     _featNotifications = v;
@@ -490,7 +561,21 @@ class DashboardProvider with ChangeNotifier {
 
   void toggleUnit() {
     _isKmph = !_isKmph;
+    _updateSpeedLimitDisplay();
     notifyListeners();
+  }
+
+  /// Derives the display string from the canonical km/h value, converting to
+  /// mph only at this single point so the numeric value is never displayed
+  /// in the wrong unit.
+  void _updateSpeedLimitDisplay() {
+    if (_speedLimitKmph == null) {
+      _speedLimit = '?';
+    } else {
+      final int displayValue =
+          _isKmph ? _speedLimitKmph! : (_speedLimitKmph! / 1.60934).round();
+      _speedLimit = displayValue.toString();
+    }
   }
 
   Timer? _demoTimer;
@@ -509,8 +594,10 @@ class DashboardProvider with ChangeNotifier {
             double speedKmph = 125.0 + (wave * 10.0);
             _speed = speedKmph / 3.6; // convert to m/s
           }
-          
-          _speedLimit = "120"; // Force 120 limit
+          _displaySpeed = _speed; // demo timer already ticks at 10Hz, no extrapolation needed
+
+          _speedLimitKmph = 120; // Force 120 limit
+          _updateSpeedLimitDisplay();
           _accuracy = 4.5;
           _altitude = 650.0 + _speed;
           _heading = (_heading + 1.5) % 360;
@@ -521,9 +608,16 @@ class DashboardProvider with ChangeNotifier {
     } else {
        _demoTimer?.cancel();
        _speed = 0.0;
-       _speedLimit = '?';
+       _speedLimitKmph = null;
+       _updateSpeedLimitDisplay();
        _streetName = 'Scanning...';
        _accuracy = 0.0;
+       // Real driving should start from a clean slate, not demo-mode leftovers.
+       _speedLimitCache = null;
+       _speedLimitCacheAnchor = null;
+       _pendingSpeedLimitKmph = null;
+       _pendingSpeedLimitConfirmCount = 0;
+       _speedLimitMissCount = 0;
        checkLocationSettingsAndPermissions();
     }
     notifyListeners();
@@ -573,7 +667,6 @@ class DashboardProvider with ChangeNotifier {
 
   Future<void> initialize() async {
     await _loadSettings();
-    await checkNewDrive();
     checkPermissions();
     await checkLocationSettingsAndPermissions();
     _startLocationUpdates();
@@ -787,18 +880,31 @@ class DashboardProvider with ChangeNotifier {
   
   void _startLocationUpdates() {
     if (!hasLocationPermission) return;
-    
+
     _positionStreamSubscription?.cancel();
+    final LocationSettings locationSettings = Platform.isAndroid
+        ? AndroidSettings(
+            accuracy: LocationAccuracy.bestForNavigation,
+            distanceFilter: 0,
+            intervalDuration: const Duration(milliseconds: 500),
+            forceLocationManager: false,
+          )
+        : const LocationSettings(
+            accuracy: LocationAccuracy.bestForNavigation,
+            distanceFilter: 0,
+          );
     _positionStreamSubscription = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.bestForNavigation,
-        distanceFilter: 0,
-      ),
+      locationSettings: locationSettings,
     ).listen((Position position) {
       if (!_isDemoMode) {
-        _speed = position.speed;
+        final double newSpeed = position.speed < 0 ? 0 : position.speed;
+        final int nowMs = DateTime.now().millisecondsSinceEpoch;
+        final double dtSec = _lastSpeedFixMs == 0 ? 0 : (nowMs - _lastSpeedFixMs) / 1000.0;
+        _speedAccelEstimate = (dtSec > 0.05) ? (newSpeed - _speed) / dtSec : 0.0;
+        _speed = newSpeed;
+        _displaySpeed = newSpeed;
+        _lastSpeedFixMs = nowMs;
         _accuracy = position.accuracy;
-        if (_speed < 0) _speed = 0;
         _altitude = position.altitude;
         _heading = position.heading;
         notifyListeners();
@@ -811,21 +917,51 @@ class DashboardProvider with ChangeNotifier {
           _fetchWeather(position);
         }
 
-        if (_lastSpeedLimitPosition == null ||
-            Geolocator.distanceBetween(_lastSpeedLimitPosition!.latitude, _lastSpeedLimitPosition!.longitude, position.latitude, position.longitude) > 200) {
-            // Only advance the anchor once we actually kick off a fetch; if one is
-            // already in flight, leave the anchor so the next position retries
-            // instead of being silently skipped for another 200 m.
-            if (!_isFetchingSpeedLimit) {
-              _lastSpeedLimitPosition = position;
-              if (_featSpeedLimit) _fetchSpeedLimit(position);
+        if (_featSpeedLimit) {
+          _updateSpeedLimitForPosition(position);
+        }
+
+        // Street name: derived from the matched way inside
+        // _updateSpeedLimitForPosition when available (see _lastMatchedStreetNameMs
+        // below); Nominatim is only a distance-gated fallback for unnamed ways
+        // or when speed-limit fetching itself is disabled.
+        final bool haveFreshMatchedName =
+            DateTime.now().millisecondsSinceEpoch - _lastMatchedStreetNameMs < 60000;
+        if (!haveFreshMatchedName &&
+            (_lastStreetNameFallbackPosition == null ||
+                Geolocator.distanceBetween(_lastStreetNameFallbackPosition!.latitude,
+                        _lastStreetNameFallbackPosition!.longitude, position.latitude, position.longitude) >
+                    200)) {
+            if (!_isFetchingStreetName) {
+              _lastStreetNameFallbackPosition = position;
               _fetchStreetName(position);
             }
         }
       }
     });
+
+    _speedExtrapolationTimer?.cancel();
+    _speedExtrapolationTimer = Timer.periodic(const Duration(milliseconds: 120), (_) {
+      if (_isDemoMode || _lastSpeedFixMs == 0) return;
+      final int nowMs = DateTime.now().millisecondsSinceEpoch;
+      final double elapsedSec = (nowMs - _lastSpeedFixMs) / 1000.0;
+      double newDisplaySpeed;
+      if (elapsedSec > 1.0) {
+        // GPS fixes have stalled well past the expected ~0.5-1s cadence —
+        // stop extrapolating forward and settle back to the last real
+        // reading rather than drifting indefinitely.
+        newDisplaySpeed = _speed;
+      } else {
+        final double predicted = _speed + _speedAccelEstimate * elapsedSec;
+        newDisplaySpeed = predicted < 0 ? 0 : predicted;
+      }
+      if (newDisplaySpeed != _displaySpeed) {
+        _displaySpeed = newDisplaySpeed;
+        notifyListeners();
+      }
+    });
   }
-  
+
   bool _isFetchingDashcam = false;
   
   void _startDashcamPolling() {
@@ -1001,37 +1137,130 @@ class DashboardProvider with ChangeNotifier {
 
   bool _isFetchingSpeedLimit = false;
 
-  Future<void> _fetchSpeedLimit(Position position) async {
+  /// Entry point called on every position tick: matches against the cached
+  /// neighborhood immediately (cheap, synchronous), and separately kicks off
+  /// a wider-radius Overpass refresh only when the car has left the cached
+  /// area or the cache has gone stale — trading "always refetch every 200m"
+  /// for "match every tick, fetch rarely".
+  void _updateSpeedLimitForPosition(Position position) {
+    final bool needsFetch = _speedLimitCache == null ||
+        _speedLimitCacheAnchor == null ||
+        Geolocator.distanceBetween(_speedLimitCacheAnchor!.latitude, _speedLimitCacheAnchor!.longitude,
+                position.latitude, position.longitude) >
+            _speedLimitCacheRadiusM * 0.6 ||
+        DateTime.now().millisecondsSinceEpoch - _speedLimitCacheFetchedAtMs > _speedLimitCacheMaxAgeMs;
+
+    if (needsFetch && !_isFetchingSpeedLimit) {
+      _fetchSpeedLimitCache(position);
+    }
+
+    _matchSpeedLimitFromCache(position);
+  }
+
+  Future<void> _fetchSpeedLimitCache(Position position) async {
      if (_isFetchingSpeedLimit) return;
      _isFetchingSpeedLimit = true;
      try {
         final lat = position.latitude;
         final lon = position.longitude;
-        final query = '[out:json];way(around:10,$lat,$lon)["maxspeed"]["highway"!="service"];out tags;';
+        final query = '[out:json];way(around:${_speedLimitCacheRadiusM.toInt()},$lat,$lon)'
+            '["maxspeed"]["highway"]["highway"!~"^(service|proposed|construction|raceway|footway|cycleway|path|steps)\$"];'
+            'out geom;';
         final url = Uri.parse('https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(query)}');
-        
-        final response = await http.get(url, headers: {'User-Agent': 'CarDashboardApp/1.0'}).timeout(const Duration(seconds: 5));
+
+        final response = await http.get(url, headers: {'User-Agent': 'CarDashboardApp/1.0'}).timeout(const Duration(seconds: 8));
         if (response.statusCode == 200) {
            final data = jsonDecode(response.body);
-           if (data['elements'] != null && data['elements'].isNotEmpty) {
-               final String ms = data['elements'][0]['tags']['maxspeed'] ?? '';
-               // Extract just the numbers in case it says "80 mph"
-               final match = RegExp(r'\d+').firstMatch(ms);
-               if (match != null) {
-                   _speedLimit = match.group(0)!;
-                   notifyListeners();
-               }
-           } else {
-               if (_speedLimit != '?') {
-                  _speedLimit = '?';
-                  notifyListeners();
-               }
+           final elements = data['elements'] as List<dynamic>? ?? [];
+           final List<_WayGeom> ways = [];
+           for (final el in elements) {
+              final geom = el['geometry'] as List<dynamic>?;
+              final tags = el['tags'] as Map<String, dynamic>?;
+              if (geom == null || tags == null || geom.length < 2) continue;
+              ways.add(_WayGeom(
+                lats: geom.map((p) => (p['lat'] as num).toDouble()).toList(),
+                lons: geom.map((p) => (p['lon'] as num).toDouble()).toList(),
+                tags: tags,
+              ));
            }
+           _speedLimitCache = ways;
+           _speedLimitCacheAnchor = position;
+           _speedLimitCacheFetchedAtMs = DateTime.now().millisecondsSinceEpoch;
+           _matchSpeedLimitFromCache(position);
         }
      } catch (e) {
         debugPrint("Speed limit fetch failed: $e");
      } finally {
         _isFetchingSpeedLimit = false;
+     }
+  }
+
+  /// Synchronous local map-matching against the cached neighborhood, with
+  /// hysteresis so a single bad/ambiguous read doesn't instantly flip the
+  /// displayed sign.
+  void _matchSpeedLimitFromCache(Position position) {
+     final ways = _speedLimitCache;
+     if (ways == null) return;
+
+     final match = _selectBestWay(ways, position.latitude, position.longitude, position.heading, position.speed);
+
+     if (match == null) {
+        _registerSpeedLimitMiss();
+        return;
+     }
+
+     final limitKmph = _parseMaxspeedToKmph(match.tags, heading: position.heading, wayBearing: match.segBearing);
+     if (limitKmph == null) {
+        // Matched a real road but its maxspeed tag is unusable (e.g. "none"/"signals").
+        _registerSpeedLimitMiss();
+        return;
+     }
+     _speedLimitMissCount = 0;
+
+     if (limitKmph == _speedLimitKmph) {
+        _pendingSpeedLimitKmph = null;
+        _pendingSpeedLimitConfirmCount = 0;
+     } else {
+        if (_pendingSpeedLimitKmph == limitKmph) {
+           _pendingSpeedLimitConfirmCount++;
+        } else {
+           _pendingSpeedLimitKmph = limitKmph;
+           _pendingSpeedLimitConfirmCount = 1;
+        }
+
+        // A first-ever reading applies immediately; a change away from an
+        // existing value needs 2 consecutive agreeing reads first, so one
+        // bad Overpass/GPS sample can't flip the sign on its own.
+        if (_speedLimitKmph == null || _pendingSpeedLimitConfirmCount >= 2) {
+           _speedLimitKmph = limitKmph;
+           _pendingSpeedLimitKmph = null;
+           _pendingSpeedLimitConfirmCount = 0;
+           _updateSpeedLimitDisplay();
+           notifyListeners();
+        }
+     }
+
+     // The matched way's own name can't reference a different road than the
+     // speed limit just derived from it — prefer it over the separate
+     // Nominatim lookup.
+     final matchedName = match.tags['name'] as String?;
+     if (matchedName != null && matchedName.isNotEmpty && matchedName != _streetName) {
+        _streetName = matchedName;
+        notifyListeners();
+     }
+     if (matchedName != null && matchedName.isNotEmpty) {
+        _lastMatchedStreetNameMs = DateTime.now().millisecondsSinceEpoch;
+     }
+  }
+
+  void _registerSpeedLimitMiss() {
+     _speedLimitMissCount++;
+     if (_speedLimitMissCount >= 3 && _speedLimitKmph != null) {
+        _speedLimitKmph = null;
+        _pendingSpeedLimitKmph = null;
+        _pendingSpeedLimitConfirmCount = 0;
+        _updateSpeedLimitDisplay();
+        notifyListeners();
      }
   }
 
@@ -1201,12 +1430,28 @@ class DashboardProvider with ChangeNotifier {
           final activeId = (event['activeQueueItemId'] as num?)?.toInt() ?? -1;
           final activeChanged = activeId != _nativeActiveQueueItemId;
           if (!_nativeQueueEquals(parsed, _nativeQueue) || activeChanged) {
-            // The item that WAS active is about to fall off the front of
-            // getQueue()'s window — log it to history before it's gone,
-            // unless it's still present in the new snapshot (nothing lost).
-            // Only on an actual transition (activeChanged) — a same-track
-            // queue reshuffle must never archive the still-playing item.
-            if (activeChanged && _nativeActiveQueueItemId != -1) {
+            // A brand-new queue started (e.g. the user picked a different
+            // mix/playlist from outside the app — YT Music's own UI, a
+            // notification, Android Auto) shares NO queueIds with what we
+            // had mirrored, unlike an organic advance/reshuffle within the
+            // same queue which always keeps most items. Treat that as a
+            // session boundary, same as CollabService.playNativeMix (see
+            // clearNativeQueueHistory doc above): drop the old history
+            // instead of archiving into it, otherwise stale queueIds from
+            // the abandoned queue linger in the list and tapping them to
+            // skip-to-queue-item silently fails (YT Music has no such item
+            // in its live queue anymore).
+            final isNewSession = parsed.isNotEmpty &&
+                _nativeQueue.isNotEmpty &&
+                !parsed.any((q) => _nativeQueue.any((old) => old['queueId'] == q['queueId']));
+            if (isNewSession) {
+              _nativeQueueHistory.clear();
+            } else if (activeChanged && _nativeActiveQueueItemId != -1) {
+              // The item that WAS active is about to fall off the front of
+              // getQueue()'s window — log it to history before it's gone,
+              // unless it's still present in the new snapshot (nothing lost).
+              // Only on an actual transition (activeChanged) — a same-track
+              // queue reshuffle must never archive the still-playing item.
               final leaving = _nativeQueue.where((q) => q['queueId'] == _nativeActiveQueueItemId.toString());
               if (leaving.isNotEmpty && !parsed.any((q) => q['queueId'] == _nativeActiveQueueItemId.toString())) {
                 final item = leaving.first;
@@ -1334,6 +1579,7 @@ class DashboardProvider with ChangeNotifier {
     _callDurationTimer?.cancel();
     _positionStreamSubscription?.cancel();
     _demoTimer?.cancel();
+    _speedExtrapolationTimer?.cancel();
     _shareSubscription?.cancel();
     platform.setMethodCallHandler(null);
     super.dispose();
@@ -1595,8 +1841,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       Provider.of<DashboardProvider>(context, listen: false).checkPermissions();
-    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      Provider.of<DashboardProvider>(context, listen: false).updateLastActiveTime();
     }
   }
 
@@ -1704,14 +1948,6 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           ),
         ),
       ),
-          Consumer<DashboardProvider>(
-            builder: (context, prov, child) {
-              if (prov.showWelcomeUI) {
-                return const WelcomeOverlayWidget();
-              }
-              return const SizedBox.shrink();
-            },
-          ),
           Consumer<DashboardProvider>(
             builder: (context, prov, child) {
               if (prov.showSettingsUI) {
@@ -1932,22 +2168,6 @@ class HeaderBarWidget extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 Container(width: 1, height: 16, color: onSurface.withOpacity(0.24)),
-                const SizedBox(width: 8),
-                
-                GestureDetector(
-                  onTap: () {
-                    Provider.of<DashboardProvider>(context, listen: false).forceShowWelcomeUI();
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: onSurface.withOpacity(0.04),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: onSurface.withOpacity(0.08)),
-                    ),
-                    child: Icon(Icons.drive_eta, color: onSurface.withOpacity(0.6), size: 16),
-                  ),
-                ),
                 const SizedBox(width: 8),
                 GestureDetector(
                   onTap: () {

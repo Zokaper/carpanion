@@ -10,9 +10,9 @@ class SpeedometerWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     final provider = Provider.of<DashboardProvider>(context);
     
-    final speed = provider.isKmph 
-        ? provider.speed * 3.6 
-        : provider.speed * 2.23694;
+    final speed = provider.isKmph
+        ? provider.displaySpeed * 3.6
+        : provider.displaySpeed * 2.23694;
         
     final speedString = speed.toInt().toString();
     final maxSpeed = provider.isKmph ? 240.0 : 160.0;
@@ -25,11 +25,11 @@ class SpeedometerWidget extends StatelessWidget {
     double? warningPct;
     double? dangerPct;
 
-    if (provider.featSpeedWarning && provider.speedLimit != '?') {
-      final intLimit = int.tryParse(provider.speedLimit);
+    if (provider.featSpeedWarning && provider.speedLimitKmph != null) {
+      final intLimit = provider.speedLimitKmph;
       if (intLimit != null) {
-        // provider.speed is in m/s, so we calculate km/h for the Saher logic
-        final currentSpeedKmph = provider.speed * 3.6;
+        // provider.displaySpeed is in m/s, so we calculate km/h for the Saher logic
+        final currentSpeedKmph = provider.displaySpeed * 3.6;
         final saherThreshold = intLimit <= 120 ? intLimit + 10 : intLimit + 5;
         
         if (currentSpeedKmph >= saherThreshold) {
