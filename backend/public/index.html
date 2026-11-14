@@ -1,271 +1,121 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Carpanion Queue</title>
-  <link rel="manifest" href="manifest.json">
-  <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
-  <style>
-    body {
-      background-color: #121212;
-      color: #ffffff;
-      font-family: 'Inter', sans-serif;
-      margin: 0;
-      padding: 20px;
-      box-sizing: border-box;
-      max-width: 600px;
-      margin-left: auto;
-      margin-right: auto;
-    }
-    h1 { text-align: center; margin-bottom: 5px; }
-    #message { text-align: center; color: #aaaaaa; margin-top: 0; }
-    #status { text-align: center; margin-top: 10px; font-weight: bold; }
-    .success { color: #1DB954; }
-    .error { color: #ff5252; }
-    button {
-      padding: 8px 16px;
-      background-color: #1DB954;
-      color: #000;
-      border: none;
-      border-radius: 20px;
-      font-weight: bold;
-      cursor: pointer;
-    }
-    .search-container {
-      position: relative;
-      margin-top: 20px;
-    }
-    .switch-container {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 8px;
-    }
-    .switch-label { font-size: 14px; color: #aaa; }
-    .switch { position: relative; display: inline-block; width: 40px; height: 20px; }
-    .switch input { opacity: 0; width: 0; height: 0; }
-    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #555; transition: .4s; border-radius: 20px; }
-    .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 2px; bottom: 2px; background-color: white; transition: .4s; border-radius: 50%; }
-    input:checked + .slider { background-color: #ff0000; }
-    input:checked + .slider:before { transform: translateX(20px); }
-    #searchInput {
-      width: 100%;
-      padding: 12px 16px;
-      border-radius: 24px;
-      border: none;
-      background-color: #282828;
-      color: white;
-      font-size: 16px;
-      box-sizing: border-box;
-    }
-    #searchResults {
-      position: absolute;
-      top: 100%;
-      left: 0;
-      right: 0;
-      background-color: #282828;
-      border-radius: 8px;
-      margin-top: 4px;
-      max-height: 300px;
-      overflow-y: auto;
-      z-index: 1000;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-    }
-    .queue-list, #queueList {
-      list-style: none;
-      margin: 0;
-      padding: 0;
-      transition: opacity 0.2s ease;
-    }
-    .queue-item {
-      display: flex;
-      align-items: center;
-      padding: 12px;
-      background: rgba(255, 255, 255, 0.05);
-      margin-bottom: 8px;
-      border-radius: 12px;
-      transition: background 0.3s ease, border-left 0.3s ease;
-      border-left: 4px solid transparent;
-    }
-    .queue-item.playing {
-      background: rgba(100, 255, 100, 0.15);
-      border-left: 4px solid #64ff64;
-    }
-    .drag-handle:active {
-      cursor: grabbing !important;
-    }
-    .hidden { display: none !important; }
-    .result-item {
-      display: flex;
-      align-items: center;
-      padding: 12px;
-      margin-bottom: 8px;
-      background: rgba(255, 255, 255, 0.05);
-      border-radius: 12px;
-      transition: background 0.2s;
-    }
-    .queue-item:hover { background: rgba(255, 255, 255, 0.1); }
-    .queue-item.tappable { cursor: pointer; }
-    .queue-item.tappable:active { background: rgba(255, 255, 255, 0.14); }
-    .queue-item img {
-      width: 48px;
-      height: 48px;
-      border-radius: 8px;
-      object-fit: cover;
-      margin-right: 16px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    }
-    .queue-item .info { flex-grow: 1; overflow: hidden; }
-    .queue-item .title { font-weight: bold; font-size: 15px; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #fff; }
-    .queue-item .artist { font-size: 13px; color: #aaa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    
-    #searchResults {
-      position: absolute; width: 100%; max-height: 250px; overflow-y: auto;
-      background: #1e1e28; border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 8px; margin-top: 4px; z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-    }
-    #searchResults li {
-      padding: 8px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-      display: flex; align-items: center; gap: 12px; cursor: pointer; transition: background 0.2s;
-    }
-    #searchResults li:hover { background: rgba(255, 255, 255, 0.1); }
-    #searchResults img { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; }
-    .search-info { flex: 1; overflow: hidden; }
-    .search-title { font-weight: 600; font-size: 13px; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #fff; }
-    .search-artist { font-size: 11px; color: rgba(255, 255, 255, 0.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    ul { list-style: none; padding: 0; margin: 0; }
-
-    /* --- Queue item edit controls --- */
-    .queue-item .controls {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      margin-left: 8px;
-    }
-    .icon-btn {
-      width: 38px;
-      height: 38px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: rgba(255, 255, 255, 0.06);
-      border: none;
-      color: #9a9a9a;
-      cursor: pointer;
-      padding: 0;
-      transition: background 0.2s ease, color 0.2s ease, transform 0.12s ease;
-    }
-    .icon-btn svg { width: 18px; height: 18px; fill: currentColor; display: block; }
-    .icon-btn.delete-btn:hover { background: rgba(255, 82, 82, 0.16); color: #ff5252; }
-    .icon-btn.delete-btn:active { transform: scale(0.88); }
-    .drag-handle {
-      width: 38px;
-      height: 38px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #6a6a6a;
-      cursor: grab;
-      touch-action: none;
-      transition: color 0.2s ease, background 0.2s ease;
-    }
-    .drag-handle svg { width: 20px; height: 20px; fill: currentColor; display: block; }
-    .drag-handle:hover { color: #bbb; background: rgba(255, 255, 255, 0.06); }
-    .drag-handle:active { cursor: grabbing; }
-    .sortable-ghost { opacity: 0.4; }
-    .sortable-chosen { background: rgba(255, 255, 255, 0.12); }
-
-    /* --- Bottom media control bar --- */
-    .media-controls {
-      position: fixed;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      background: rgba(24, 24, 32, 0.92);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 28px;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
-      z-index: 2000;
-      box-shadow: 0 -8px 32px rgba(0,0,0,0.45);
-      transition: transform 0.3s ease;
-    }
-    .media-controls.hidden {
-      transform: translateY(120%);
-      display: flex !important; /* Keep it flex to allow transform animation */
-    }
-    .media-btn {
-      background: rgba(255, 255, 255, 0.08);
-      border-radius: 50%;
-      width: 52px;
-      height: 52px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #ffffff;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      cursor: pointer;
-      padding: 0;
-      transition: background 0.2s ease, transform 0.12s ease;
-    }
-    .media-btn svg { width: 24px; height: 24px; fill: currentColor; display: block; }
-    .media-btn:hover { background: rgba(255, 255, 255, 0.14); }
-    .media-btn:active { transform: scale(0.9); }
-    .media-btn.primary {
-      width: 66px;
-      height: 66px;
-      background: #1DB954;
-      color: #0a0a0a;
-      border: none;
-      box-shadow: 0 6px 20px rgba(29, 185, 84, 0.4);
-    }
-    .media-btn.primary svg { width: 30px; height: 30px; }
-    .media-btn.primary:hover { background: #1ed760; }
-    body { padding-bottom: 110px; } /* Space for media controls */
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0B0716">
+<title>Horizon Party</title>
+<link rel="manifest" href="manifest.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700&display=swap">
+<link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
-  <h1>Carpanion Queue</h1>
-  <p id="message">Loading session...</p>
-  <div id="status"></div>
-  
-  <div class="search-container">
-    <div class="switch-container">
-      <span class="switch-label">Search YouTube instead? (For demos)</span>
-      <label class="switch">
-        <input type="checkbox" id="searchMode">
-        <span class="slider"></span>
-      </label>
+<div class="wash" aria-hidden="true"><img id="washImg" alt=""></div>
+
+<!-- Join: the code (from the link) and a name, asked once on this phone. -->
+<section id="join" class="screen" hidden>
+  <div class="join">
+    <h1>Join the party</h1>
+    <p class="dim">Add songs to the car's queue from your phone.</p>
+    <form id="joinForm" autocomplete="off">
+      <label for="codeInput">Party code</label>
+      <input id="codeInput" class="code" maxlength="6" autocapitalize="characters" spellcheck="false" placeholder="6 letters">
+      <label for="nameInput">Your name</label>
+      <input id="nameInput" maxlength="24" placeholder="Shown next to your songs">
+      <p id="joinError" class="error" hidden></p>
+      <button class="primary big" type="submit">Join</button>
+    </form>
+  </div>
+</section>
+
+<!-- The party ended, or the driver started a new code. -->
+<section id="closed" class="screen" hidden>
+  <div class="join">
+    <p class="eyebrow" id="closedCode"></p>
+    <h1 id="closedTitle"></h1>
+    <p class="dim" id="closedText"></p>
+    <button class="primary big" id="closedJoin" type="button">Join with a new code</button>
+  </div>
+</section>
+
+<!-- The party: Now, Search and Queue tabs. -->
+<section id="party" class="screen" hidden>
+  <header class="top">
+    <span class="code-tag"><span id="dot" class="dot"></span><span id="partyCode"></span></span>
+    <button id="who" class="who" type="button" aria-label="Change your name"></button>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+
+  <main>
+    <div id="tabNow" class="tab">
+      <div class="now">
+        <img id="nowCover" class="cover" alt="">
+        <div class="now-text">
+          <h2 id="nowTitle">Nothing playing yet</h2>
+          <p id="nowArtist" class="dim"></p>
+          <p id="nowBy" class="by"></p>
+        </div>
+        <div class="progress"><div class="bar"><div id="nowBar"></div></div>
+          <div class="times"><span id="nowPos">0:00</span><span id="nowDur"></span></div></div>
+        <div id="controls" class="controls" hidden>
+          <button class="icon" data-media="previous" aria-label="Previous"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zM9.5 12L18 18V6z"/></svg></button>
+          <button class="icon play" data-media="playPause" aria-label="Play or pause"><svg id="playIcon" viewBox="0 0 24 24"></svg></button>
+          <button class="icon" data-media="next" aria-label="Next"><svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
+        </div>
+        <div id="mine" class="mine-list"></div>
+        <button id="nowAdd" class="primary" type="button">Add a song</button>
+      </div>
     </div>
-    <input type="text" id="searchInput" placeholder="Search and add a song..." autocomplete="off">
-    <div id="searchResults" class="hidden"></div>
-  </div>
 
-  <h2 style="margin-top: 30px; border-bottom: 1px solid #333; padding-bottom: 8px;">Next Up</h2>
-  <ul id="queueList"></ul>
+    <div id="tabSearch" class="tab" hidden>
+      <div id="searchHome">
+        <h2 class="title">Search</h2>
+        <div class="field">
+          <svg viewBox="0 0 24 24" class="glass" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <label for="q" class="sr">Search songs, artists, albums</label>
+          <input id="q" type="search" placeholder="Songs, artists, albums" autocomplete="off" enterkeyhint="search">
+          <span id="spin" class="spin" hidden aria-label="Searching"></span>
+          <button id="qClear" class="clear" type="button" aria-label="Clear" hidden><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        </div>
+        <div class="chips" role="tablist">
+          <button class="chip on" data-filter="all" role="tab">All</button>
+          <button class="chip" data-filter="songs" role="tab">Songs</button>
+          <button class="chip" data-filter="artists" role="tab">Artists</button>
+          <button class="chip" data-filter="albums" role="tab">Albums</button>
+        </div>
+        <div id="results"></div>
+      </div>
+      <div id="browse" hidden>
+        <button id="browseBack" class="back" type="button"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg><span id="browseBackText">Back</span></button>
+        <div id="browseBody"></div>
+      </div>
+    </div>
 
-  <center><button id="installBtn" style="display: none; margin-top: 40px;">Install App to Share from Spotify</button></center>
+    <div id="tabQueue" class="tab" hidden>
+      <div class="queue-head"><h2 class="title">Queue</h2><span id="queueCount" class="dim"></span></div>
+      <div id="queue"></div>
+    </div>
+  </main>
 
-  <div id="mediaControls" class="media-controls hidden">
-    <button class="media-btn" id="btnPrev" aria-label="Previous track">
-      <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zM9 12l9 6V6z"/></svg>
-    </button>
-    <button class="media-btn primary" id="btnPlayPause" aria-label="Play or pause">
-      <svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
-    </button>
-    <button class="media-btn" id="btnNext" aria-label="Next track">
-      <svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 6v12l9-6z"/></svg>
-    </button>
-  </div>
+  <button id="mini" class="mini" type="button" hidden>
+    <img id="miniCover" alt="">
+    <span class="mini-text"><span id="miniTitle"></span><span id="miniSub" class="dim"></span></span>
+    <span id="miniBar" class="mini-bar"></span>
+  </button>
+  <div id="toast" class="toast" role="status" hidden></div>
 
-  <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=5"></script>
+  <nav class="tabs">
+    <button data-tab="Now" class="on"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l5.5-3.5z"/></svg>Now</button>
+    <button data-tab="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>Search</button>
+    <button data-tab="Queue"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Queue</button>
+  </nav>
+</section>
+
+<div id="waking" class="waking" hidden><span class="spin"></span><span>Waking the server. The first visit of the day can take up to a minute.</span></div>
+
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

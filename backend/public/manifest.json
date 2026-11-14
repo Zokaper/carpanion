@@ -1,10 +1,10 @@
 {
-  "name": "Carpanion Queue",
-  "short_name": "Car Queue",
+  "name": "Horizon Party",
+  "short_name": "Party",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#121212",
-  "theme_color": "#1DB954",
+  "background_color": "#0B0716",
+  "theme_color": "#0B0716",
   "icons": [
     {
       "src": "icon-192.png",
