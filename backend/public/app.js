@@ -257,6 +257,20 @@ function initial(p, cls) {
   return el('span', { class: 'initial' + (cls ? ' ' + cls : ''), style: `background:${colorOf(n, p.id === guestId)}`, text: (p.id === guestId ? 'Y' : n[0]).toUpperCase() });
 }
 
+/**
+ * About how long until entry [id] plays: what's left of the playing song, plus a typical song length for each one
+ * before it (the page only knows the playing song's length). "" when it isn't in the coming order we have.
+ */
+const TYPICAL_SONG_MS = 210000;
+function eta(id) {
+  const r = rot();
+  const i = r ? r.upcoming.findIndex((it) => it.id === id) : -1;
+  if (i < 0 || !state) return '';
+  const left = Math.max(0, (state.now.durationMs || TYPICAL_SONG_MS) - position());
+  const min = Math.round((left + i * TYPICAL_SONG_MS) / 60000);
+  return min < 1 ? 'Next' : `~${min} min`;
+}
+
 /** Where your next song is in the coming order (0: plays next), or -1. */
 function myPlace() { const r = rot(); return r ? r.upcoming.findIndex((it) => it.guestId === guestId) : -1; }
 
@@ -270,7 +284,8 @@ function turnCard() {
       el('button', { class: 'ghost', type: 'button', text: 'Add', onclick: () => { setTab('Search'); $('q').focus(); } }));
   }
   return el('div', { class: 'card turncard' }, img(q[0].thumbnail), el('div', { class: 'grow' },
-    el('span', { class: 'eyebrow accent', text: place === 0 ? 'YOUR TURN IS NEXT' : place > 0 ? `YOUR TURN IN ${songs(place)}`.toUpperCase() : 'YOUR NEXT SONG' }),
+    el('span', { class: 'eyebrow accent', text: (place === 0 ? 'YOUR TURN IS NEXT' : place > 0 ? `YOUR TURN IN ${songs(place)}`.toUpperCase() : 'YOUR NEXT SONG')
+      + (place >= 0 && eta(q[0].id) !== 'Next' ? ` · ${eta(q[0].id).toUpperCase()}` : '') }),
     el('span', { class: 't', text: `${q[0].title} · ${q[0].artist}`, style: 'font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' })),
     el('button', { class: 'ghost', type: 'button', text: 'Change', onclick: () => setTab('Mine') }));
 }
@@ -324,6 +339,7 @@ function renderMine() {
     const row = el('div', { class: 'qrow' + (it.radio ? ' radio' : ''), 'data-id': it.id },
       el('span', { class: 'handle', 'aria-label': 'Drag to move' }, icon('grip')), img(it.thumbnail),
       el('div', { class: 'grow' }, el('span', { class: 't', text: it.title }), el('span', { class: 's', text: it.radio ? `${it.artist} · Endless` : it.artist })),
+      el('span', { class: 'tag eta', text: eta(it.id) }),
       el('button', { class: 'del', type: 'button', 'aria-label': `Remove ${it.title}`, onclick: () => { if (mine('remove', { itemId: it.id })) row.style.opacity = '0.4'; } }, icon('trash')));
     list.append(row);
   });
@@ -582,6 +598,11 @@ function renderMini() {
   $('miniTitle').textContent = n.title;
   $('miniSub').textContent = n.by ? `${n.artist} · ${n.by}` : n.artist;
 }
+
+// The time-to-play estimates count down with the song (not while you drag a row).
+setInterval(() => { if (tab === 'Mine' && !document.querySelector('.sortable-chosen')) for (const row of document.querySelectorAll('#mineList .qrow')) {
+  const t = row.querySelector('.eta'); if (t) t.textContent = eta(row.dataset.id);
+} }, 15000);
 
 // The bars and clock move between states.
 setInterval(() => {

@@ -185,6 +185,7 @@ main { flex: 1; }
 .switch[aria-checked="true"] { background: var(--accent); }
 .switch[aria-checked="true"] span { left: 24px; background: var(--on-accent); }
 .mine-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0; }
+.tag.eta { font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
 .mine-tools > span:last-child { display: flex; gap: 8px; flex: none; }
 .mine-tools .showplayed { margin: 0; }
 .signin { display: flex; flex-direction: column; gap: 12px; padding: 18px; border-radius: 18px; background: var(--panel); border: 1px solid var(--line); margin-top: 4px; }
