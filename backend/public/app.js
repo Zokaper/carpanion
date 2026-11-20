@@ -1,5 +1,7 @@
 // Horizon Party: the guests' page. Talks to the car (Horizon on the driver's phone) through the relay, protocol 2
-// (see server.js). Everything shown comes from the car's `state`; every request carries an id and only the answer to
+// (see server.js). A party is an Open queue (one shared queue) or a Rotation (everyone's own queue, taking turns:
+// state.rotation, the My queue tab, guest:mine). Guests can sign in to their own YT Music (Library tab): Google's
+// sign-in for TVs, and the token is kept here on this phone so it lasts across parties. Everything shown comes from the car's `state`; every request carries an id and only the answer to
 // the newest one counts, so a slow answer never replaces a newer one.
 'use strict';
 
@@ -160,6 +162,8 @@ function enterParty() {
     clearTimeout(wake);
     $('waking').hidden = true;
     socket.emit('guest:join', { session: code, guestId, name });
+    // Signed in to YT Music on an earlier visit: the car gets the token again (it keeps it only while the party runs).
+    if (store.get('ytToken')) socket.emit('guest:auth', { refreshToken: store.get('ytToken') });
   });
   socket.on('disconnect', () => setOnline(null));
   socket.on('car_status', (d) => setOnline(!!(d && d.online)));
@@ -170,6 +174,11 @@ function enterParty() {
   socket.on('added', onAdded);
   socket.on('failed', onFailed);
   socket.on('car_offline', onOffline);
+  socket.on('library_results', onLibrary);
+  socket.on('auth_code', onAuthCode);
+  socket.on('auth_token', onAuthToken);
+  socket.on('auth_state', onAuthState);
+  socket.on('auth_failed', onAuthFailed);
 }
 
 function setOnline(v) {
@@ -204,8 +213,10 @@ function render(s) {
   state = s;
   stateAt = performance.now();
   if (online !== true) setOnline(true);
+  setMode();
   renderNow();
   renderQueue();
+  renderMine();
   renderMini();
   if (lastShown) renderResults();
   if (stack.length) renderBrowse();
@@ -221,7 +232,244 @@ function position() {
 function items() { return state ? state.queue.items : []; }
 function current() { return state ? state.queue.current : -1; }
 function upcoming() { const c = current(); return items().slice(c + 1); }
-function queued(videoId) { const c = current(); return items().some((it, i) => i >= c && it.videoId === videoId); }
+function queued(videoId) {
+  if (rot()) return me().queue.some((it) => it.videoId === videoId);
+  const c = current(); return items().some((it, i) => i >= c && it.videoId === videoId);
+}
+
+// --- Rotation ---------------------------------------------------------------------------------------------------------
+
+function rot() { return state && state.mode === 'rotation' && state.rotation ? state.rotation : null; }
+function me() { const r = rot(); return (r && r.people.find((p) => p.id === guestId)) || { queue: [], endless: false, count: 0 }; }
+function personName(p) { return p.id === guestId ? 'You' : p.name; }
+
+/** The 4th tab is the shared Queue in an Open queue, My queue in a Rotation. */
+function setMode() {
+  const r = !!rot();
+  $('tabLast').dataset.tab = r ? 'Mine' : 'Queue';
+  $('tabLastText').textContent = r ? 'My queue' : 'Queue';
+  if (r && tab === 'Queue') setTab('Mine');
+  if (!r && tab === 'Mine') setTab('Queue');
+}
+
+function initial(p, cls) {
+  const n = p.name || '?';
+  return el('span', { class: 'initial' + (cls ? ' ' + cls : ''), style: `background:${colorOf(n, p.id === guestId)}`, text: (p.id === guestId ? 'Y' : n[0]).toUpperCase() });
+}
+
+/** Where your next song is in the coming order (0: plays next), or -1. */
+function myPlace() { const r = rot(); return r ? r.upcoming.findIndex((it) => it.guestId === guestId) : -1; }
+
+function turnCard() {
+  const q = me().queue;
+  const place = myPlace();
+  if (!q.length) {
+    return el('div', { class: 'card turncard' }, el('div', { class: 'grow' },
+      el('span', { class: 'eyebrow accent', text: 'YOUR QUEUE IS EMPTY' }),
+      el('span', { class: 'dim', style: 'font-size:13px', text: me().endless ? 'Endless keeps your turns going with songs like your last one.' : 'Your turns are skipped until you add a song.' })),
+      el('button', { class: 'ghost', type: 'button', text: 'Add', onclick: () => { setTab('Search'); $('q').focus(); } }));
+  }
+  return el('div', { class: 'card turncard' }, img(q[0].thumbnail), el('div', { class: 'grow' },
+    el('span', { class: 'eyebrow accent', text: place === 0 ? 'YOUR TURN IS NEXT' : place > 0 ? `YOUR TURN IN ${songs(place)}`.toUpperCase() : 'YOUR NEXT SONG' }),
+    el('span', { class: 't', text: `${q[0].title} · ${q[0].artist}`, style: 'font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' })),
+    el('button', { class: 'ghost', type: 'button', text: 'Change', onclick: () => setTab('Mine') }));
+}
+
+function strip(r) {
+  return el('div', { class: 'strip' }, r.people.map((p) => {
+    const now = r.turn === p.id;
+    const out = p.sittingOut || (!now && !r.upcoming.some((it) => it.guestId === p.id));
+    return el('span', { class: 'person' + (now ? ' turn' : '') + (out ? ' out' : '') }, initial(p), personName(p), p.endless ? ' ∞' : '');
+  }));
+}
+
+function comingRow(it) {
+  const p = { id: it.guestId, name: it.by };
+  return el('div', { class: 'qrow' + (it.guestId === guestId ? ' own' : '') }, el('span', { class: 'cov' }, img(it.thumbnail), initial(p)),
+    el('div', { class: 'grow' }, el('span', { class: 't', text: it.title }), el('span', { class: 's' }, byLine(it, it.artist))));
+}
+
+function renderComing() {
+  const box = $('comingUp');
+  const r = rot();
+  box.hidden = !r;
+  if (!r) return;
+  box.replaceChildren(turnCard(), el('div', { class: 'head2' }, el('h3', { text: 'Coming up' }),
+    el('span', { class: 'dim', style: 'font-size:12px', text: r.perTurn === 1 ? '1 song a turn' : `${r.perTurn} songs a turn` })), strip(r));
+  const starts = new Set(r.roundStarts || []);
+  r.upcoming.slice(0, 6).forEach((it, i) => {
+    if (i > 0 && starts.has(it.id)) box.append(el('div', { class: 'divider round-div', text: 'NEXT ROUND' }));
+    box.append(comingRow(it));
+  });
+  if (!r.upcoming.length) box.append(el('p', { class: 'note', text: 'Nobody has a song queued. Add one from Search or your Library.' }));
+}
+
+let mineSortable = null;
+function mine(op, data) { return send('guest:mine', Object.assign({ op }, data || {})); }
+
+function renderMine() {
+  if (!rot()) return;
+  const m = me();
+  const q = m.queue;
+  const picked = q.filter((it) => !it.radio).length;
+  $('mineCount').textContent = songs(picked) + (q.length > picked ? ' · then Endless' : '');
+  $('mineTurn').replaceChildren(turnCard());
+  $('endless').setAttribute('aria-checked', String(!!m.endless));
+  const box = $('mineList');
+  box.replaceChildren();
+  if (mineSortable) { mineSortable.destroy(); mineSortable = null; }
+  if (!q.length) { box.append(el('p', { class: 'note', text: 'Add songs from Search, or a whole playlist from your Library.' })); return; }
+  const list = el('div');
+  q.forEach((it) => {
+    const row = el('div', { class: 'qrow' + (it.radio ? ' radio' : ''), 'data-id': it.id },
+      el('span', { class: 'handle', 'aria-label': 'Drag to move' }, icon('grip')), img(it.thumbnail),
+      el('div', { class: 'grow' }, el('span', { class: 't', text: it.title }), el('span', { class: 's', text: it.radio ? `${it.artist} · Endless` : it.artist })),
+      el('button', { class: 'del', type: 'button', 'aria-label': `Remove ${it.title}`, onclick: () => { if (mine('remove', { itemId: it.id })) row.style.opacity = '0.4'; } }, icon('trash')));
+    list.append(row);
+  });
+  box.append(list);
+  if (window.Sortable) mineSortable = Sortable.create(list, { handle: '.handle', animation: 150, onEnd: (e) => {
+    if (e.oldIndex === e.newIndex) return;
+    list.style.opacity = '0.5';
+    mine('move', { itemId: e.item.dataset.id, to: e.newIndex });
+  } });
+}
+
+$('endless').addEventListener('click', () => {
+  const on = $('endless').getAttribute('aria-checked') !== 'true';
+  $('endless').setAttribute('aria-checked', String(on));
+  mine('endless', { on });
+});
+$('mineShuffle').addEventListener('click', () => { if (mine('shuffle')) toast('Shuffled your queue.'); });
+$('mineClear').addEventListener('click', () => { if (me().queue.length && confirm('Clear your whole queue?')) mine('clear'); });
+
+// --- Your YT Music (Library) -------------------------------------------------------------------------------------------
+
+let lib = null;        // {signedIn, mixes, playlists} or {error}
+let libAsked = null;   // request id of the library we're waiting for
+let signing = null;    // {userCode, url} while a sign-in waits for Google
+let libOpen = null;    // a list opened from the library: {kind:'playlist', browseId, name, id, data}
+
+function signedIn() { return !!store.get('ytToken'); }
+
+function openLibrary() {
+  if (signedIn() && !lib && !libAsked) requestLibrary();
+  renderLibrary();
+}
+
+function requestLibrary() {
+  libAsked = String(++seq);
+  if (!send('guest:library', { id: libAsked })) libAsked = null;
+  renderLibrary();
+}
+
+function onLibrary(d) {
+  if (d.id !== libAsked) return;
+  libAsked = null;
+  lib = d;
+  renderLibrary();
+}
+
+function fine(svgPath, text) {
+  const s = icon('plus'); s.innerHTML = svgPath;
+  return el('div', { class: 'fine' }, s, el('span', { text }));
+}
+
+function renderLibrary() {
+  const box = $('libBody');
+  box.replaceChildren();
+  $('libWho').textContent = signedIn() ? 'Your YT Music' : '';
+  if (!signedIn()) {
+    const card = el('div', { class: 'signin' }, el('h3', { text: 'Bring your own music' }),
+      el('p', { class: 'dim', text: 'Sign in to your YT Music to add your playlists, Liked Music and your own mix.' }));
+    if (signing && signing.userCode) {
+      card.append(el('p', { class: 'eyebrow', text: '1 · COPY YOUR CODE' }), el('div', { class: 'code-big', text: signing.userCode }),
+        el('button', { class: 'primary big', type: 'button', style: 'margin-top:0', text: 'Copy code, open Google', onclick: () => {
+          try { navigator.clipboard.writeText(signing.userCode); } catch { /* the code is on screen */ }
+          window.open(signing.url, '_blank');
+        } }),
+        el('p', { class: 'eyebrow', text: '2 · PASTE IT, PICK YOUR ACCOUNT, ALLOW' }),
+        el('div', { class: 'fine', style: 'margin:0' }, el('span', { class: 'spin' }), el('span', { text: 'Waiting for Google… then come back here.' })),
+        el('button', { class: 'more', type: 'button', style: 'margin:0', text: 'Cancel', onclick: () => { send('guest:signin_cancel', {}); signing = null; renderLibrary(); } }));
+    } else if (signing) {
+      card.append(el('div', { class: 'note' }, el('span', { class: 'spin' })));
+    } else {
+      card.append(el('button', { class: 'primary big', type: 'button', style: 'margin-top:0', text: 'Sign in to YT Music', onclick: () => {
+        if (online !== true) { toast("The driver's phone is offline. Try again when it's back.", 'bad'); return; }
+        signing = {}; send('guest:signin', {}); renderLibrary();
+      } }));
+    }
+    box.append(card,
+      fine('<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>', "You stay signed in on this phone, for every party. The driver's phone only reads your library while you're in the party, and forgets it after."),
+      fine('<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16v.5"/>', "Google may say the app isn't verified. Tap Advanced, then Go to Horizon."),
+      fine('<path d="M4 12h16M12 4v16"/>', 'No account? Search still has everything.'));
+    return;
+  }
+  if (!lib || libAsked) { box.append(el('div', { class: 'note' }, el('span', { class: 'spin' }))); return; }
+  if (lib.error || !lib.signedIn) {
+    box.append(el('div', { class: 'note' }, el('p', { text: lib.error || "Your sign-in didn't work." }),
+      el('button', { class: 'primary', type: 'button', text: 'Try again', onclick: requestLibrary })));
+  } else {
+    box.append(el('p', { class: 'section', text: 'MIXED FOR YOU' }), el('div', { class: 'mixes' }, (lib.mixes || []).map((m) =>
+      el('button', { class: 'mix', type: 'button', onclick: () => openList(m) }, el('b', { text: m.title }), el('span', { text: m.subtitle })))));
+    box.append(el('p', { class: 'section', text: 'PLAYLISTS' }));
+    (lib.playlists || []).forEach((l) => box.append(listRow(l)));
+    if (!(lib.playlists || []).length) box.append(el('p', { class: 'note', text: 'No playlists in your library yet.' }));
+  }
+  box.append(el('button', { class: 'showplayed', type: 'button', style: 'margin-top:18px', text: 'Sign out of YT Music', onclick: () => {
+    send('guest:signout', {}); store.set('ytToken', ''); lib = null; renderLibrary(); toast('Signed out of YT Music on this phone.');
+  } }));
+}
+
+function listRow(l) {
+  const addAll = rot() ? el('button', { class: 'ghost', type: 'button', text: 'Add all', onclick: (e) => { e.stopPropagation(); addList(l); } }) : null;
+  return el('div', { class: 'row tap', onclick: () => openList(l) }, img(l.thumbnail), el('div', { class: 'grow' },
+    el('span', { class: 't', text: l.title }), el('span', { class: 's', text: l.subtitle })), addAll || icon('chev', 'chev'));
+}
+
+function addList(l) {
+  if (online !== true) { toast("The driver's phone is offline. Try again when it's back.", 'bad'); return; }
+  if (mine('add', { id: String(++seq), playlistId: l.playlistId })) toast(`Adding “${l.title}” to your queue…`);
+}
+
+function openList(l) {
+  libOpen = { kind: 'playlist', browseId: l.playlistId, name: l.title, id: String(++seq), data: null, list: l };
+  $('libHome').hidden = true; $('libPage').hidden = false;
+  renderLibPage();
+  if (!send('guest:browse', { id: libOpen.id, kind: 'playlist', browseId: l.playlistId, name: l.title })) { libOpen.data = { error: 'Not connected to the party right now.' }; renderLibPage(); }
+  window.scrollTo(0, 0);
+}
+
+$('libBack').addEventListener('click', () => { libOpen = null; $('libPage').hidden = true; $('libHome').hidden = false; });
+
+function renderLibPage() {
+  const page = libOpen;
+  if (!page) return;
+  const box = $('libPageBody');
+  box.replaceChildren(el('div', { class: 'head' }, img(page.list.thumbnail), el('div', {}, el('h2', { text: page.name }),
+    el('p', { class: 'dim', text: rot() ? 'Tap + to add a song to your queue' : 'Tap + to add a song to the party' }))));
+  const d = page.data;
+  if (!d) { box.append(el('div', { class: 'note' }, el('span', { class: 'spin' }))); return; }
+  if (d.error) { box.append(el('div', { class: 'note' }, el('p', { text: d.error }))); return; }
+  if (rot() && d.songs.length) box.append(el('button', { class: 'primary', type: 'button', style: 'margin:8px 0', text: `Add all ${d.songs.length}`, onclick: () => {
+    if (mine('add', { id: String(++seq), songs: d.songs })) toast(`Adding ${songs(d.songs.length)} to your queue…`);
+  } }));
+  d.songs.forEach((s) => box.append(songRow(s)));
+}
+
+function onAuthCode(d) { signing = { userCode: d.userCode, url: d.url || 'https://www.google.com/device' }; renderLibrary(); }
+function onAuthToken(d) {
+  if (!d.refreshToken) return;
+  store.set('ytToken', d.refreshToken);
+  signing = null; lib = null;
+  toast('Signed in to YT Music.', 'good');
+  if (tab === 'Library') openLibrary();
+}
+function onAuthState(d) {
+  if (d.expired) { store.set('ytToken', ''); lib = null; toast('Your YT Music sign-in ran out. Sign in again from Library.', 'bad'); }
+  if (tab === 'Library') renderLibrary();
+}
+function onAuthFailed(d) { signing = null; renderLibrary(); toast((d && d.message) || "Sign-in didn't finish. Try again.", 'bad'); }
 
 function renderNow() {
   const n = state.now;
@@ -237,9 +485,11 @@ function renderNow() {
   $('nowDur').textContent = n.durationMs > 0 ? clock(n.durationMs) : '';
   $('controls').hidden = !state.perms.control;
   $('playIcon').innerHTML = n.playing ? PATHS.pause : PATHS.play;
-  // Your songs still to come, with how long until each plays.
+  renderComing();
+  // Your songs still to come, with how long until each plays (a Rotation shows your turn instead).
   const box = $('mine');
   box.replaceChildren();
+  if (rot()) return;
   upcoming().forEach((it, i) => {
     if (it.guestId !== guestId || box.children.length >= 3) return;
     box.append(el('div', { class: 'card' }, img(it.thumbnail),
@@ -351,7 +601,8 @@ let tab = 'Now';
 function setTab(t) {
   tab = t;
   for (const b of document.querySelectorAll('.tabs button')) b.classList.toggle('on', b.dataset.tab === t);
-  for (const name of ['Now', 'Search', 'Queue']) $('tab' + name).hidden = name !== t;
+  for (const name of ['Now', 'Search', 'Library', 'Queue', 'Mine']) $('tab' + name).hidden = name !== t;
+  if (t === 'Library') openLibrary();
   renderMini();
   window.scrollTo(0, 0);
 }
@@ -464,7 +715,7 @@ const addingIds = new Set(); // video ids on their way
 
 function songRow(s) {
   const right = addingIds.has(s.videoId) ? el('span', { class: 'spin', 'aria-label': 'Adding' })
-    : queued(s.videoId) ? el('span', { class: 'tag', text: 'In queue' })
+    : queued(s.videoId) ? el('span', { class: 'tag', text: rot() ? 'In your queue' : 'In queue' })
     : el('button', { class: 'add', type: 'button', 'aria-label': `Add ${s.title}`, onclick: () => add(s) }, icon('plus'));
   return el('div', { class: 'row' }, img(s.thumbnail), el('div', { class: 'grow' },
     el('span', { class: 't', text: s.title }), el('span', { class: 's', text: s.artist })), right);
@@ -501,8 +752,13 @@ function add(s) {
 function onAdded(d) {
   const s = adding.get(d.id);
   if (s) { adding.delete(d.id); addingIds.delete(s.videoId); }
-  const when = d.ahead < 0 ? 'It plays now.' : d.ahead === 0 ? 'It plays next.' : `It plays after ${songs(d.ahead)}.`;
-  toast(`Added “${d.title}”. ${when}`, 'good');
+  if (d.mine) {
+    const when = d.ahead == null || d.ahead < 0 ? '' : d.ahead === 0 ? ' It plays next.' : ` It plays after ${songs(d.ahead)}.`;
+    toast(`Added “${d.title}” to your queue.${when}`, 'good');
+  } else {
+    const when = d.ahead < 0 ? 'It plays now.' : d.ahead === 0 ? 'It plays next.' : `It plays after ${songs(d.ahead)}.`;
+    toast(`Added “${d.title}”. ${when}`, 'good');
+  }
   refreshLists();
 }
 
@@ -519,7 +775,7 @@ function onOffline(d) {
   setOnline(false);
 }
 
-function refreshLists() { if (lastShown) renderResults(); if (stack.length) renderBrowse(); }
+function refreshLists() { if (lastShown) renderResults(); if (stack.length) renderBrowse(); if (libOpen) renderLibPage(); }
 
 // --- Artist and album pages --------------------------------------------------------------------------------------------
 
@@ -548,6 +804,7 @@ function requestBrowse() {
 }
 
 function onBrowse(d) {
+  if (libOpen && libOpen.id === d.id) { libOpen.data = d; renderLibPage(); return; }
   const page = stack.find((p) => p.id === d.id);
   if (!page) return;
   page.data = d;

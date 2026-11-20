@@ -8,7 +8,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700&display=swap">
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
 <div class="wash" aria-hidden="true"><img id="washImg" alt=""></div>
@@ -64,6 +64,7 @@
           <button class="icon" data-media="next" aria-label="Next"><svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
         </div>
         <div id="mine" class="mine-list"></div>
+        <div id="comingUp" class="coming" hidden></div>
         <button id="nowAdd" class="primary" type="button">Add a song</button>
       </div>
     </div>
@@ -92,6 +93,30 @@
       </div>
     </div>
 
+    <div id="tabLibrary" class="tab" hidden>
+      <div id="libHome">
+        <div class="queue-head"><h2 class="title">Library</h2><span id="libWho" class="dim"></span></div>
+        <div id="libBody"></div>
+      </div>
+      <div id="libPage" hidden>
+        <button id="libBack" class="back" type="button"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg><span>Library</span></button>
+        <div id="libPageBody"></div>
+      </div>
+    </div>
+
+    <div id="tabMine" class="tab" hidden>
+      <div class="queue-head"><h2 class="title">My queue</h2><span id="mineCount" class="dim"></span></div>
+      <div id="mineTurn"></div>
+      <div class="switch-row">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8c-2.2 0-4 1.8-4 4s1.8 4 4 4c3.5 0 6.5-8 10-8 2.2 0 4 1.8 4 4s-1.8 4-4 4c-3.5 0-6.5-8-10-8z"/></svg>
+        <label for="endless" class="grow"><b>Endless</b><span class="dim">When your queue runs out, keep your turns with songs like yours</span></label>
+        <button id="endless" class="switch" type="button" role="switch" aria-checked="false" aria-label="Endless"><span></span></button>
+      </div>
+      <div class="mine-tools"><span class="section" style="margin:0">PLAYS IN THIS ORDER</span>
+        <span><button id="mineShuffle" class="showplayed" type="button">Shuffle</button> <button id="mineClear" class="showplayed" type="button">Clear</button></span></div>
+      <div id="mineList"></div>
+    </div>
+
     <div id="tabQueue" class="tab" hidden>
       <div class="queue-head"><h2 class="title">Queue</h2><span id="queueCount" class="dim"></span></div>
       <div id="queue"></div>
@@ -108,7 +133,8 @@
   <nav class="tabs">
     <button data-tab="Now" class="on"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l5.5-3.5z"/></svg>Now</button>
     <button data-tab="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>Search</button>
-    <button data-tab="Queue"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Queue</button>
+    <button data-tab="Library"><svg viewBox="0 0 24 24"><path d="M5 4v16M10 4v16M15 4l4 16"/></svg>Library</button>
+    <button data-tab="Queue" id="tabLast"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span id="tabLastText">Queue</span></button>
   </nav>
 </section>
 
@@ -116,6 +142,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <script src="/socket.io/socket.io.js"></script>
-<script src="app.js?v=7"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>
